@@ -7,8 +7,9 @@ from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksView
 
 
 class MockEvent:
-    def __init__(self, value):
+    def __init__(self, value=None, modifiers=None):
         self.value = value
+        self.modifiers = modifiers or []
 
 
 def create_kymograph_event_val(
@@ -119,3 +120,24 @@ def test_kymograph_paint_rejects_cross_frame_stroke(
     info_mock.assert_called_once()
     assert tracks.segmentation[3, 10, 99] == 0
     assert tracks.segmentation[4, 10, 0] == 0
+
+
+def test_kymograph_label_click_selects_without_centering_view(
+    make_napari_viewer,
+    graph_2d,
+    segmentation_2d,
+):
+    viewer = make_napari_viewer()
+    tracks = SolutionTracks(graph=graph_2d, segmentation=segmentation_2d, ndim=3)
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.set_view_mode("kymograph")
+
+    labels_layer = tracks_viewer.kymograph_layers.labels_layer
+
+    with patch.object(tracks_viewer, "center_on_node") as center_mock:
+        labels_layer.process_click(MockEvent(), 1)
+
+    center_mock.assert_not_called()
+    assert list(tracks_viewer.selected_nodes) == [1]

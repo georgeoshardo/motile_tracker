@@ -7,9 +7,10 @@ from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksView
 
 
 class MockEvent:
-    def __init__(self, action=None, value=None):
+    def __init__(self, action=None, value=None, modifiers=None):
         self.action = action
         self.value = value
+        self.modifiers = modifiers or []
 
 
 def test_kymograph_point_add_move_delete_and_undo(
@@ -84,3 +85,25 @@ def test_kymograph_point_move_cannot_cross_frame_boundary(
     info_mock.assert_called_once()
     assert tracks.get_time(node) == 1
     assert tracks.get_position(node) == original_position
+
+
+def test_kymograph_point_click_selects_without_centering_view(
+    make_napari_viewer,
+    graph_2d,
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((5, 100, 100)), name="raw")
+    tracks = SolutionTracks(graph=graph_2d, ndim=3)
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.set_kymograph_image_layer("raw")
+    tracks_viewer.set_view_mode("kymograph")
+
+    points_layer = tracks_viewer.kymograph_layers.points_layer
+
+    with patch.object(tracks_viewer, "center_on_node") as center_mock:
+        points_layer.process_click(MockEvent(), 0)
+
+    center_mock.assert_not_called()
+    assert list(tracks_viewer.selected_nodes) == [points_layer.nodes[0]]

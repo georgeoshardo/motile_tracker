@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Optional
 
 import napari
@@ -102,6 +103,7 @@ class TracksViewer:
         self._detached_kymograph_image_visible = True
         self._spatial_ndisplay = int(self.viewer.dims.ndisplay)
         self._spatial_axis_labels = tuple(self.viewer.dims.axis_labels)
+        self._selection_updates_set_view = True
 
         self.collection_widget = CollectionWidget(self)
         self.collection_widget.group_changed.connect(self.update_selection)
@@ -467,8 +469,20 @@ class TracksViewer:
         """
         self.center_node.emit(node)
 
-    def update_selection(self, set_view: bool = True) -> None:
+    @contextmanager
+    def selection_updates(self, *, set_view: bool):
+        previous = self._selection_updates_set_view
+        self._selection_updates_set_view = bool(set_view)
+        try:
+            yield
+        finally:
+            self._selection_updates_set_view = previous
+
+    def update_selection(self, set_view: bool | None = None) -> None:
         """Sets the view and triggers visualization updates in other components"""
+
+        if set_view is None:
+            set_view = self._selection_updates_set_view
 
         if set_view and len(self.selected_nodes) == 1:
             self.center_on_node(self.selected_nodes[0])

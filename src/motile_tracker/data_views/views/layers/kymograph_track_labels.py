@@ -51,6 +51,11 @@ class KymographTrackLabels(TrackLabels):
         self.blending = "translucent_no_depth"
         self._refresh()
 
+    def process_click(self, event, label: int, layer=None):
+        if label is not None and label != 0:
+            with self.tracks_viewer.selection_updates(set_view=False):
+                super().process_click(event, label, layer)
+
     def update_page(
         self,
         *,

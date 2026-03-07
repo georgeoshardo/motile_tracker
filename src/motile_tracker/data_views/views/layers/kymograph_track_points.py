@@ -109,16 +109,17 @@ class KymographTrackPoints(Points):
         point_index: int | None,
         _layer: napari.layers.Points | None = None,
     ):
-        if point_index is None:
-            self.tracks_viewer.selected_nodes.reset()
-        else:
-            node_id = self.nodes[point_index]
-            append = "Shift" in event.modifiers
-            jump = "Control" in event.modifiers
-            if jump:
-                self.tracks_viewer.center_on_node(node_id)
+        with self.tracks_viewer.selection_updates(set_view=False):
+            if point_index is None:
+                self.tracks_viewer.selected_nodes.reset()
             else:
-                self.tracks_viewer.selected_nodes.add(node_id, append)
+                node_id = self.nodes[point_index]
+                append = "Shift" in event.modifiers
+                jump = "Control" in event.modifiers
+                if jump:
+                    self.tracks_viewer.center_on_node(node_id)
+                else:
+                    self.tracks_viewer.selected_nodes.add(node_id, append)
 
     def set_point_size(self, size: int) -> None:
         self.default_size = size
@@ -272,10 +273,11 @@ class KymographTrackPoints(Points):
     def _update_selection(self):
         if self.mode == "select":
             selected_points = self.selected_data
-            self.tracks_viewer.selected_nodes.reset()
-            for point in selected_points:
-                node_id = self.nodes[point]
-                self.tracks_viewer.selected_nodes.add(node_id, True)
+            with self.tracks_viewer.selection_updates(set_view=False):
+                self.tracks_viewer.selected_nodes.reset()
+                for point in selected_points:
+                    node_id = self.nodes[point]
+                    self.tracks_viewer.selected_nodes.add(node_id, True)
 
     def get_symbols(self, tracks: Tracks, symbolmap: dict[NodeType, str]) -> list[str]:
         statemap = {
