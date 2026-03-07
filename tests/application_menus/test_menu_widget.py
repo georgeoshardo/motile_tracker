@@ -61,6 +61,7 @@ def test_menu_widget_initialization(
     mock_tracks_viewer.tracks_updated.connect.assert_called_once()
     assert widget.tabwidget is not None
     assert isinstance(widget.tabwidget, QTabWidget)
+    assert widget.tabwidget.tabPosition() == QTabWidget.West
 
     # Test 2: Verify 4 initial tabs with correct names
     assert widget.tabwidget.count() == 4

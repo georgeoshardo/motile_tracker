@@ -89,7 +89,10 @@ class TracksLayerGroup:
             self.viewer.add_layer(self.seg_layer)
             # silly fix for loading zarr on Windows: load labels only at the end and then
             # swap layer order here to avoid error "access violation reading..."
-            self.viewer.layers.move(-1, -2)
+            source_index = len(self.viewer.layers) - 1
+            target_index = max(0, source_index - 1)
+            if source_index != target_index:
+                self.viewer.layers.move(source_index, target_index)
 
             # This is just to ensure that the layer selection makes sense, because after
             # moving a layer, the layer tools are not updated correctly.
