@@ -270,6 +270,33 @@ class TestKymographMode:
         assert tracks_viewer.kymograph_layers.detached_image_layer is None
         assert tracks_viewer.kymograph_layers.background_layer is None
 
+    def test_kymograph_mode_accepts_numpy_array_scale(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        scale = np.asarray([1.0, 1.0, 1.0])
+        viewer.add_image(
+            np.asarray(segmentation_2d, dtype=float),
+            name="raw",
+            scale=scale,
+        )
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            scale=scale,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_kymograph_image_layer("raw")
+
+        assert tracks_viewer.set_view_mode("kymograph") is True
+        assert tracks_viewer.kymograph_layers.geometry is not None
+
     def test_kymograph_mode_requires_image_for_point_tracks(
         self,
         make_napari_viewer,

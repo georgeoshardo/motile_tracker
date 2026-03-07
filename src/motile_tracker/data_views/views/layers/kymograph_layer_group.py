@@ -202,9 +202,12 @@ class KymographLayerGroup:
         if self.tracks is not None and self.tracks.segmentation is not None:
             if tuple(layer.data.shape) != tuple(self.tracks.segmentation.shape):
                 return False
-            track_scale = tuple(
-                float(v) for v in (self.tracks.scale or (1.0, 1.0, 1.0))
+            track_scale_values = (
+                self.tracks.scale
+                if self.tracks.scale is not None
+                else (1.0, 1.0, 1.0)
             )
+            track_scale = tuple(float(v) for v in track_scale_values)
             layer_scale = tuple(float(v) for v in layer.scale)
             if len(layer_scale) >= 3 and tuple(layer_scale[-3:]) != tuple(
                 track_scale[-3:]
