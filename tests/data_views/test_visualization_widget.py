@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from funtracks.data_model import SolutionTracks
 
@@ -19,6 +20,27 @@ def visualization_widget(make_napari_viewer, graph_3d, segmentation_3d, qtbot):
     qtbot.addWidget(widget)
 
     assert tracks_viewer.tracking_layers.seg_layer is not None
+
+    return widget, tracks_viewer
+
+
+@pytest.fixture
+def visualization_widget_2d(
+    make_napari_viewer,
+    graph_2d,
+    segmentation_2d,
+    qtbot,
+):
+    viewer = make_napari_viewer()
+    viewer.add_image(np.asarray(segmentation_2d, dtype=float), name="raw")
+    tracks = SolutionTracks(graph=graph_2d, segmentation=segmentation_2d, ndim=3)
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.set_kymograph_image_layer("raw")
+
+    widget = LabelVisualizationWidget(viewer)
+    qtbot.addWidget(widget)
 
     return widget, tracks_viewer
 
@@ -63,6 +85,27 @@ def test_opacity_updates_seg_layer(visualization_widget):
     assert layer.highlight_opacity == pytest.approx(0.25)
     assert layer.foreground_opacity == pytest.approx(0.5)
     assert layer.background_opacity == pytest.approx(0.75)
+
+
+def test_kymograph_button_disabled_for_3d_tracks(visualization_widget):
+    widget, _ = visualization_widget
+
+    assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is False
+
+
+def test_view_mode_switches_to_kymograph_and_disables_image_selector(
+    visualization_widget_2d,
+):
+    widget, tracks_viewer = visualization_widget_2d
+
+    assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is True
+    assert widget.image_layer_box.currentText() == "raw"
+
+    widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+
+    assert tracks_viewer.view_mode == "kymograph"
+    assert widget.image_layer_box.isEnabled() is False
+    assert widget.image_layer_box.currentText() == "raw"
 
 
 def test_contour_checkbox_updates_layer(visualization_widget):

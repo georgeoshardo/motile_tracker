@@ -6,6 +6,7 @@ Tests cover node operations, edge operations, display modes, and selection manag
 from unittest.mock import patch
 
 import networkx as nx
+import numpy as np
 import pytest
 from funtracks.data_model import SolutionTracks
 
@@ -226,6 +227,123 @@ class TestDisplayModes:
 
         # Should keep showing the previous lineage
         assert len(tracks_viewer.visible) > 0
+
+
+class TestKymographMode:
+    def test_set_view_mode_with_image_restores_clean_2d_state(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        raw_image = viewer.add_image(
+            np.asarray(segmentation_2d, dtype=float),
+            name="raw",
+        )
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_kymograph_image_layer("raw")
+
+        assert tracks_viewer.set_view_mode("kymograph") is True
+        assert tracks_viewer.view_mode == "kymograph"
+        assert viewer.dims.ndim == 2
+        assert viewer.dims.ndisplay == 2
+        assert "raw" not in [layer.name for layer in viewer.layers]
+        assert tracks_viewer.kymograph_layers.detached_image_layer is raw_image
+        assert tracks_viewer.kymograph_layers.background_layer is not None
+        assert tracks_viewer.kymograph_layers.available_image_layers() == ["raw"]
+        assert tuple(viewer.dims.axis_labels) == ("y", "x(time)")
+
+        tracks_viewer.set_view_mode("spatial")
+
+        assert tracks_viewer.view_mode == "spatial"
+        assert viewer.dims.ndim == 3
+        assert viewer.layers["raw"] is raw_image
+        assert raw_image.visible is True
+        assert tracks_viewer.kymograph_layers.detached_image_layer is None
+        assert tracks_viewer.kymograph_layers.background_layer is None
+
+    def test_kymograph_mode_requires_image_for_point_tracks(
+        self,
+        make_napari_viewer,
+        graph_2d,
+    ):
+        viewer = make_napari_viewer()
+        tracks = SolutionTracks(graph=graph_2d, ndim=3)
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+
+        with patch(
+            "motile_tracker.data_views.views_coordinator.tracks_viewer.show_warning"
+        ) as warning_mock:
+            assert tracks_viewer.set_view_mode("kymograph") is False
+
+        warning_mock.assert_called_once()
+        assert tracks_viewer.view_mode == "spatial"
+
+        viewer.add_image(np.zeros((5, 100, 100)), name="raw")
+        tracks_viewer.set_kymograph_image_layer("raw")
+        assert tracks_viewer.set_view_mode("kymograph") is True
+        assert viewer.dims.ndim == 2
+
+    def test_center_on_node_jumps_to_the_matching_page(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_view_mode("kymograph")
+        tracks_viewer.set_kymograph_page_length(1)
+
+        assert tracks_viewer.kymograph_layers.page_start == 0
+
+        tracks_viewer.center_on_node(5)
+
+        assert tracks_viewer.kymograph_layers.page_start == 4
+        assert tracks_viewer.kymograph_layers.node_on_page(5) is True
+        assert viewer.camera.center[-2] == pytest.approx(1.5)
+        assert viewer.camera.center[-1] == pytest.approx(1.5)
+
+    def test_lineage_mode_hides_unrelated_kymograph_edges(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_view_mode("kymograph")
+
+        assert len(tracks_viewer.kymograph_layers.links_layer.data) == 4
+
+        tracks_viewer.selected_nodes.add(6)
+        tracks_viewer.set_display_mode("lineage")
+
+        assert len(tracks_viewer.kymograph_layers.links_layer.data) == 0
 
 
 class TestSelectionManagement:

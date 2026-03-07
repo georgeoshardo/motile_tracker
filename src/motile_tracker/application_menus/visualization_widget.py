@@ -257,6 +257,9 @@ class LabelVisualizationWidget(QWidget):
         )
         self.view_mode_widget.button_for_mode("kymograph").setEnabled(can_show_kymograph)
         self.kymograph_box.setEnabled(can_show_kymograph)
+        self.image_layer_box.setEnabled(
+            can_show_kymograph and self.tracks_viewer.view_mode != "kymograph"
+        )
 
         seg_layer = self.tracks_viewer.tracking_layers.seg_layer
         has_seg = seg_layer is not None

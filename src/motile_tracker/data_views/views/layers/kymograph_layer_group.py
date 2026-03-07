@@ -46,6 +46,8 @@ class KymographLayerGroup:
         self.show_boundaries = True
         self.geometry: KymographGeometry | None = None
         self.active = False
+        self.detached_image_layer: napari.layers.Image | None = None
+        self.visible_nodes: list[int] | str = "all"
 
         self.background_layer: napari.layers.Image | None = None
         self.labels_layer: KymographTrackLabels | None = None
@@ -69,8 +71,22 @@ class KymographLayerGroup:
 
     def set_image_layer_name(self, layer_name: str | None) -> None:
         self.image_layer_name = layer_name or None
+        self.geometry = self._resolve_geometry()
+        if self.geometry is not None:
+            self.page_length = default_page_length(self.geometry)
+            self.page_start = clamp_page_start(
+                self.page_start,
+                self.geometry,
+                self.page_length,
+            )
         if self.active:
             self._refresh()
+
+    def set_detached_image_layer(
+        self,
+        layer: napari.layers.Image | None,
+    ) -> None:
+        self.detached_image_layer = layer
 
     def set_page(self, *, page_start: int | None = None, page_length: int | None = None) -> None:
         if self.geometry is None:
@@ -89,13 +105,14 @@ class KymographLayerGroup:
             self.bounds_layer.visible = self.show_boundaries
 
     def available_image_layers(self) -> list[str]:
-        return [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, napari.layers.Image)
-        ]
+        layers = []
+        for layer in self._candidate_image_layers():
+            if layer.name not in layers:
+                layers.append(layer.name)
+        return layers
 
     def validate_configuration(self) -> tuple[bool, str]:
+        self.geometry = self._resolve_geometry()
         if self.tracks is None:
             return False, "Load tracks before entering kymograph mode."
         if self.tracks.ndim != 3:
@@ -157,22 +174,43 @@ class KymographLayerGroup:
         )
 
     def _resolved_image_layer(self) -> napari.layers.Image | None:
-        if not self.image_layer_name or self.image_layer_name not in self.viewer.layers:
+        if not self.image_layer_name:
             return None
-        layer = self.viewer.layers[self.image_layer_name]
-        if not isinstance(layer, napari.layers.Image):
-            return None
+
+        for layer in self._candidate_image_layers():
+            if layer.name == self.image_layer_name and self._is_usable_image_layer(layer):
+                return layer
+        return None
+
+    def _candidate_image_layers(self) -> list[napari.layers.Image]:
+        layers = [
+            layer
+            for layer in self.viewer.layers
+            if isinstance(layer, napari.layers.Image) and layer is not self.background_layer
+        ]
+        if (
+            self.detached_image_layer is not None
+            and self.detached_image_layer not in layers
+        ):
+            layers.append(self.detached_image_layer)
+        return layers
+
+    def _is_usable_image_layer(self, layer: napari.layers.Image) -> bool:
         if layer.data.ndim != 3:
-            return None
+            return False
 
         if self.tracks is not None and self.tracks.segmentation is not None:
             if tuple(layer.data.shape) != tuple(self.tracks.segmentation.shape):
-                return None
-            track_scale = tuple(float(v) for v in (self.tracks.scale or (1.0, 1.0, 1.0)))
+                return False
+            track_scale = tuple(
+                float(v) for v in (self.tracks.scale or (1.0, 1.0, 1.0))
+            )
             layer_scale = tuple(float(v) for v in layer.scale)
-            if len(layer_scale) >= 3 and tuple(layer_scale[-3:]) != tuple(track_scale[-3:]):
-                return None
-        return layer
+            if len(layer_scale) >= 3 and tuple(layer_scale[-3:]) != tuple(
+                track_scale[-3:]
+            ):
+                return False
+        return True
 
     def _page_image(self) -> np.ndarray | None:
         image_layer = self._resolved_image_layer()
@@ -199,8 +237,16 @@ class KymographLayerGroup:
         if self.tracks is None or self.geometry is None:
             return []
 
+        visible_nodes = None
+        if not isinstance(self.visible_nodes, str):
+            visible_nodes = set(self.visible_nodes)
+
         segments: list[np.ndarray] = []
         for source, target in self.tracks.graph.edges:
+            if visible_nodes is not None and (
+                source not in visible_nodes or target not in visible_nodes
+            ):
+                continue
             source_coords = point_to_kymograph_coords(
                 timepoint=self.tracks.get_time(source),
                 position=self.tracks.get_position(source),
@@ -344,9 +390,11 @@ class KymographLayerGroup:
         self._refresh_points()
         self._refresh_links()
         self._refresh_boundaries()
-        self.viewer.dims.axis_labels = ("y", "x(time)")
+        if self.viewer.dims.ndim == 2:
+            self.viewer.dims.axis_labels = ("y", "x(time)")
 
     def update_visible(self, visible_nodes: list[int] | str):
+        self.visible_nodes = visible_nodes
         if self.points_layer is not None:
             self.points_layer.update_point_outline(visible_nodes)
         if self.labels_layer is not None:
@@ -355,6 +403,8 @@ class KymographLayerGroup:
             else:
                 visible = [node for node in visible_nodes if node in self._page_nodes()]
             self.labels_layer.update_label_colormap(visible)
+        if self.links_layer is not None:
+            self._refresh_links()
 
     def center_view(self, node: int):
         if self.tracks is None or self.geometry is None:
