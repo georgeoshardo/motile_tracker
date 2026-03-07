@@ -12,13 +12,18 @@ from funtracks.user_actions import (
     UserSwapPredecessors,
 )
 from psygnal import Signal
+from napari.utils.notifications import show_warning
 
 from motile_tracker.data_views.keybindings_config import (
     KEYMAP,
     bind_keymap,
 )
 from motile_tracker.data_views.node_type import NodeType
+from motile_tracker.data_views.views.kymograph_utils import clamp_page_start
 from motile_tracker.data_views.views.layers.track_labels import new_label
+from motile_tracker.data_views.views.layers.kymograph_layer_group import (
+    KymographLayerGroup,
+)
 from motile_tracker.data_views.views.layers.tracks_layer_group import TracksLayerGroup
 from motile_tracker.data_views.views.tree_view.tree_widget_utils import (
     extract_lineage_tree,
@@ -48,6 +53,8 @@ class TracksViewer:
     tracks_updated = Signal(Optional[bool])  # noqa: UP007 UP045
     update_track_id = Signal()
     mode_updated = Signal()
+    view_mode_updated = Signal()
+    kymograph_updated = Signal()
     center_node = Signal(int)  # emitted when any component wants to center on a node
 
     @classmethod
@@ -75,10 +82,12 @@ class TracksViewer:
             NodeType.SPLIT: "triangle_up",
         }
         self.mode = "all"
+        self.view_mode = "spatial"
         self.tracks: SolutionTracks | None = None
         self.visible: list | str = []
         self.tracking_layers = TracksLayerGroup(self.viewer, self.tracks, "", self)
-        self.center_node.connect(self.tracking_layers.center_view)
+        self.kymograph_layers = KymographLayerGroup(self.viewer, self)
+        self.center_node.connect(self._center_view)
         self.selected_nodes = NodeSelectionList()
         self.selected_nodes.list_updated.connect(self.update_selection)
 
@@ -88,6 +97,7 @@ class TracksViewer:
         self.selected_track = None
         self.track_id_color = [0, 0, 0, 0]
         self.force = False
+        self._hidden_for_kymograph: dict[str, bool] = {}
 
         self.collection_widget = CollectionWidget(self)
         self.collection_widget.group_changed.connect(self.update_selection)
@@ -100,13 +110,30 @@ class TracksViewer:
         """Set the current colormap on the TracksList, so that it can be exported."""
         self.tracks_list.colormap = self.colormap
 
+    def _update_overlay_text(self) -> None:
+        view_text = "Spatial" if self.view_mode == "spatial" else "Kymograph"
+        if self.mode == "lineage":
+            display_text = "Lineage"
+        elif self.mode == "group":
+            display_text = "Group"
+        else:
+            display_text = "All"
+
+        self.viewer.text_overlay.text = (
+            BASE_TEXT + f"{display_text}\nCurrent view: {view_text}"
+        )
+        self.viewer.text_overlay.visible = True
+        self.viewer.text_overlay.font_size = 8
+
     def set_keybinds(self):
         bind_keymap(self.viewer, KEYMAP, self)
 
     def request_new_track(self) -> None:
         """Request a new track id (with new segmentation label if a seg layer is present)"""
 
-        if self.tracking_layers.seg_layer is not None:
+        if self.view_mode == "kymograph" and self.kymograph_layers.labels_layer is not None:
+            self.kymograph_layers.labels_layer.assign_new_label()
+        elif self.tracking_layers.seg_layer is not None:
             new_label(self.tracking_layers.seg_layer)
         else:
             self.set_new_track_id()
@@ -142,6 +169,7 @@ class TracksViewer:
             self.selected_nodes.reset()
 
         self.tracking_layers._refresh()
+        self.kymograph_layers._refresh()
 
         self.tracks_updated.emit(refresh_view)
 
@@ -182,11 +210,24 @@ class TracksViewer:
         self.collection_widget.retrieve_existing_groups()
 
         self.set_display_mode("all")
-        self.tracking_layers.set_tracks(tracks, name)
+        self.tracking_layers.set_tracks(
+            tracks,
+            name,
+            add_to_viewer=self.view_mode == "spatial",
+        )
+        self.kymograph_layers.set_tracks(tracks, name)
         self.selected_nodes.reset()
 
         # ensure a valid track is selected from the start
         self.request_new_track()
+
+        if self.view_mode == "kymograph":
+            ok, message = self.kymograph_layers.activate()
+            if not ok:
+                show_warning(message)
+                self.view_mode = "spatial"
+                self.tracking_layers.add_napari_layers()
+            self._update_overlay_text()
 
         # emit the update signal
         self.tracks_updated.emit(True)
@@ -200,25 +241,125 @@ class TracksViewer:
             self.set_display_mode("all")
         else:
             self.set_display_mode("lineage")
-        self.mode_updated.emit()
 
     def set_display_mode(self, mode: str) -> None:
         """Update the display mode and call to update colormaps for points, labels, and tracks"""
 
         if mode == "lineage":
             self.mode = "lineage"
-            self.viewer.text_overlay.text = BASE_TEXT + "Lineage"
         elif mode == "group":
             self.mode = "group"
-            self.viewer.text_overlay.text = BASE_TEXT + "Group"
         else:
             self.mode = "all"
-            self.viewer.text_overlay.text = BASE_TEXT + "All"
 
-        self.viewer.text_overlay.visible = True
-        self.viewer.text_overlay.font_size = 8
+        self._update_overlay_text()
         self.filter_visible_nodes()
-        self.tracking_layers.update_visible(self.visible)
+        if self.view_mode == "kymograph":
+            self.kymograph_layers.update_visible(self.visible)
+        else:
+            self.tracking_layers.update_visible(self.visible)
+        self.mode_updated.emit()
+
+    def _incompatible_kymograph_layer(self) -> str | None:
+        spatial_layers = {
+            layer
+            for layer in (
+                self.tracking_layers.tracks_layer,
+                self.tracking_layers.points_layer,
+                self.tracking_layers.seg_layer,
+            )
+            if layer is not None
+        }
+        selected_image = self.kymograph_layers._resolved_image_layer()
+        for layer in self.viewer.layers:
+            if layer in spatial_layers or layer is selected_image:
+                continue
+            if layer.visible and getattr(layer, "ndim", 2) > 2:
+                return layer.name
+        return None
+
+    def _hide_for_kymograph(self) -> None:
+        self._hidden_for_kymograph = {}
+        selected_image = self.kymograph_layers._resolved_image_layer()
+        if selected_image is not None:
+            self._hidden_for_kymograph[selected_image.name] = bool(selected_image.visible)
+            selected_image.visible = False
+
+    def _restore_kymograph_hidden_layers(self) -> None:
+        for layer_name, visible in self._hidden_for_kymograph.items():
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].visible = visible
+        self._hidden_for_kymograph = {}
+
+    def set_view_mode(self, mode: str) -> bool:
+        if mode == self.view_mode:
+            self.view_mode_updated.emit()
+            return True
+
+        if mode == "kymograph":
+            incompatible = self._incompatible_kymograph_layer()
+            if incompatible is not None:
+                show_warning(
+                    f"Hide '{incompatible}' before entering kymograph mode."
+                )
+                return False
+            self.tracking_layers.remove_napari_layers()
+            self._hide_for_kymograph()
+            ok, message = self.kymograph_layers.activate()
+            if not ok:
+                self._restore_kymograph_hidden_layers()
+                self.tracking_layers.add_napari_layers()
+                show_warning(message)
+                return False
+            self.view_mode = "kymograph"
+        else:
+            self.kymograph_layers.deactivate()
+            self._restore_kymograph_hidden_layers()
+            self.tracking_layers.add_napari_layers()
+            self.view_mode = "spatial"
+
+        self._update_overlay_text()
+        self.update_selection(set_view=False)
+        self.view_mode_updated.emit()
+        self.kymograph_updated.emit()
+        return True
+
+    def set_kymograph_image_layer(self, layer_name: str | None) -> None:
+        self.kymograph_layers.set_image_layer_name(layer_name)
+        self.kymograph_updated.emit()
+
+    def set_kymograph_page_length(self, page_length: int) -> None:
+        self.kymograph_layers.set_page(page_length=page_length)
+        self.kymograph_updated.emit()
+
+    def set_kymograph_page_start(self, page_start: int) -> None:
+        self.kymograph_layers.set_page(page_start=page_start)
+        self.kymograph_updated.emit()
+
+    def step_kymograph_page(self, delta: int) -> None:
+        self.kymograph_layers.set_page(
+            page_start=self.kymograph_layers.page_start + delta * self.kymograph_layers.page_length
+        )
+        self.kymograph_updated.emit()
+
+    def set_show_kymograph_boundaries(self, show_boundaries: bool) -> None:
+        self.kymograph_layers.set_show_boundaries(show_boundaries)
+        self.kymograph_updated.emit()
+
+    def _center_view(self, node: int) -> None:
+        if self.view_mode == "kymograph":
+            if self.kymograph_layers.geometry is not None and not self.kymograph_layers.node_on_page(node):
+                node_time = self.tracks.get_time(node)
+                page_start = clamp_page_start(
+                    node_time - self.kymograph_layers.page_length // 2,
+                    self.kymograph_layers.geometry,
+                    self.kymograph_layers.page_length,
+                )
+                self.kymograph_layers.set_page(page_start=page_start)
+                self.kymograph_updated.emit()
+            self.kymograph_layers.center_view(node)
+        else:
+            self.tracking_layers.center_view(node)
 
     def filter_visible_nodes(self) -> list[int] | str:
         """Construct a list of node_ids that should be displayed according to the display
@@ -274,7 +415,10 @@ class TracksViewer:
             self.center_on_node(self.selected_nodes[0])
 
         self.filter_visible_nodes()
-        self.tracking_layers.update_visible(self.visible)
+        if self.view_mode == "kymograph":
+            self.kymograph_layers.update_visible(self.visible)
+        else:
+            self.tracking_layers.update_visible(self.visible)
 
         if len(self.selected_nodes) > 0:
             self.selected_track = self.tracks.get_track_id(self.selected_nodes[-1])

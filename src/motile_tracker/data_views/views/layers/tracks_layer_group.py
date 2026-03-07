@@ -30,7 +30,7 @@ class TracksLayerGroup:
         self.points_layer: TrackPoints | None = None
         self.seg_layer: TrackLabels | None = None
 
-    def set_tracks(self, tracks, name):
+    def set_tracks(self, tracks, name, add_to_viewer: bool = True):
         self.remove_napari_layers()
         self.tracks = tracks
         self.name = name
@@ -64,7 +64,8 @@ class TracksLayerGroup:
         else:
             self.tracks_layer = None
             self.points_layer = None
-        self.add_napari_layers()
+        if add_to_viewer:
+            self.add_napari_layers()
 
     def remove_napari_layer(self, layer: napari.layers.Layer | None) -> None:
         """Remove a layer from the napari viewer, if present"""

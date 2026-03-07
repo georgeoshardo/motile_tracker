@@ -20,6 +20,7 @@ def mock_tracks_viewer(qtbot):
 
     mock_viewer.tracks_list = tracks_list
     mock_viewer.collection_widget = collection_widget
+    mock_viewer.tracks = None
     mock_viewer.tracking_layers = MagicMock()
     mock_viewer.tracking_layers.seg_layer = None
     mock_viewer.tracks_updated = MagicMock()
@@ -124,7 +125,7 @@ def test_toggle_visualization_widget(
     qtbot,
     mock_tracks_viewer,
 ):
-    """Test _toggle_visualization_widget adds/removes tab based on seg_layer."""
+    """Test _toggle_visualization_widget adds/removes tab based on loaded tracks."""
     viewer = make_napari_viewer()
     mock_get_instance.return_value = mock_tracks_viewer
 
@@ -140,8 +141,8 @@ def test_toggle_visualization_widget(
     assert widget._has_visualization_tab() is False
     assert widget.tabwidget.count() == 4
 
-    # Set seg_layer to something (not None)
-    mock_tracks_viewer.tracking_layers.seg_layer = MagicMock()
+    # Set tracks to something (not None)
+    mock_tracks_viewer.tracks = MagicMock()
 
     # Call toggle
     widget._toggle_visualization_widget()
@@ -157,8 +158,8 @@ def test_toggle_visualization_widget(
     assert widget.tabwidget.count() == 5  # still 5 tabs
     viz_index = widget.tabwidget.indexOf(widget.visualization_widget)
 
-    # Now remove seg_layer again
-    mock_tracks_viewer.tracking_layers.seg_layer = None
+    # Now remove tracks again
+    mock_tracks_viewer.tracks = None
     widget._toggle_visualization_widget()
 
     # Should be back to 4 tabs
@@ -168,7 +169,7 @@ def test_toggle_visualization_widget(
         assert widget.tabwidget.tabText(i) != "Visualization"
 
     # Add it back once more
-    mock_tracks_viewer.tracking_layers.seg_layer = MagicMock()
+    mock_tracks_viewer.tracks = MagicMock()
     widget._toggle_visualization_widget()
 
     # Should be at same index

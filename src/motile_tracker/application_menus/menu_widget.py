@@ -68,16 +68,16 @@ class MenuWidget(QScrollArea):
         return self.tabwidget.indexOf(self.visualization_widget) != -1
 
     def _toggle_visualization_widget(self):
-        """Only show the visualization tab when we have a TracksLabels layer"""
+        """Show the visualization tab whenever a track result is loaded."""
 
-        has_seg = self.tracks_viewer.tracking_layers.seg_layer is not None
+        has_tracks = self.tracks_viewer.tracks is not None
         has_tab = self._has_visualization_tab()
 
-        if has_seg and not has_tab:
+        if has_tracks and not has_tab:
             index = self._visualization_index
             self.tabwidget.insertTab(index, self.visualization_widget, "Visualization")
 
-        elif not has_seg and has_tab:
+        elif not has_tracks and has_tab:
             self._visualization_index = self.tabwidget.indexOf(
                 self.visualization_widget
             )
