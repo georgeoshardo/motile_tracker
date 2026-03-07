@@ -8,6 +8,8 @@ from napari.utils.notifications import show_info
 
 from motile_tracker.data_views.views.kymograph_utils import (
     KymographGeometry,
+    KymographLinkRenderData,
+    build_kymograph_link_data,
     clamp_page_start,
     concat_time_to_kymograph,
     default_page_length,
@@ -18,6 +20,9 @@ from motile_tracker.data_views.views.kymograph_utils import (
 )
 from motile_tracker.data_views.views.layers.kymograph_track_labels import (
     KymographTrackLabels,
+)
+from motile_tracker.data_views.views.layers.kymograph_track_links import (
+    KymographTrackLinks,
 )
 from motile_tracker.data_views.views.layers.kymograph_track_points import (
     KymographTrackPoints,
@@ -44,6 +49,8 @@ class KymographLayerGroup:
         self.page_start = 0
         self.page_length = 1
         self.show_boundaries = True
+        self.show_paths = True
+        self.show_branches = True
         self.geometry: KymographGeometry | None = None
         self.active = False
         self.detached_image_layer: napari.layers.Image | None = None
@@ -52,7 +59,8 @@ class KymographLayerGroup:
         self.background_layer: napari.layers.Image | None = None
         self.labels_layer: KymographTrackLabels | None = None
         self.points_layer: KymographTrackPoints | None = None
-        self.links_layer: napari.layers.Shapes | None = None
+        self.continuation_links_layer: KymographTrackLinks | None = None
+        self.branch_links_layer: KymographTrackLinks | None = None
         self.bounds_layer: napari.layers.Shapes | None = None
 
     def set_tracks(self, tracks: Tracks | None, name: str) -> None:
@@ -104,6 +112,16 @@ class KymographLayerGroup:
         if self.bounds_layer is not None:
             self.bounds_layer.visible = self.show_boundaries
 
+    def set_show_paths(self, show_paths: bool) -> None:
+        self.show_paths = bool(show_paths)
+        if self.continuation_links_layer is not None:
+            self.continuation_links_layer.visible = self.show_paths
+
+    def set_show_branches(self, show_branches: bool) -> None:
+        self.show_branches = bool(show_branches)
+        if self.branch_links_layer is not None:
+            self.branch_links_layer.visible = self.show_branches
+
     def available_image_layers(self) -> list[str]:
         layers = []
         for layer in self._candidate_image_layers():
@@ -144,12 +162,14 @@ class KymographLayerGroup:
 
     def remove_napari_layers(self) -> None:
         self.remove_napari_layer(self.background_layer)
-        self.remove_napari_layer(self.links_layer)
+        self.remove_napari_layer(self.continuation_links_layer)
+        self.remove_napari_layer(self.branch_links_layer)
         self.remove_napari_layer(self.bounds_layer)
         self.remove_napari_layer(self.points_layer)
         self.remove_napari_layer(self.labels_layer)
         self.background_layer = None
-        self.links_layer = None
+        self.continuation_links_layer = None
+        self.branch_links_layer = None
         self.bounds_layer = None
         self.points_layer = None
         self.labels_layer = None
@@ -236,41 +256,6 @@ class KymographLayerGroup:
                 nodes.append(node)
         return nodes
 
-    def _edge_segments(self) -> list[np.ndarray]:
-        if self.tracks is None or self.geometry is None:
-            return []
-
-        visible_nodes = None
-        if not isinstance(self.visible_nodes, str):
-            visible_nodes = set(self.visible_nodes)
-
-        segments: list[np.ndarray] = []
-        for source, target in self.tracks.graph.edges:
-            if visible_nodes is not None and (
-                source not in visible_nodes or target not in visible_nodes
-            ):
-                continue
-            source_coords = point_to_kymograph_coords(
-                timepoint=self.tracks.get_time(source),
-                position=self.tracks.get_position(source),
-                geometry=self.geometry,
-                page_start=self.page_start,
-                page_length=self.page_length,
-            )
-            target_coords = point_to_kymograph_coords(
-                timepoint=self.tracks.get_time(target),
-                position=self.tracks.get_position(target),
-                geometry=self.geometry,
-                page_start=self.page_start,
-                page_length=self.page_length,
-            )
-            if source_coords is None or target_coords is None:
-                continue
-            segments.append(
-                np.asarray([source_coords, target_coords], dtype=np.float32)
-            )
-        return segments
-
     def _refresh_background(self) -> None:
         image = self._page_image()
         if image is None:
@@ -336,21 +321,63 @@ class KymographLayerGroup:
                 page_length=self.page_length,
             )
 
-    def _refresh_links(self) -> None:
-        segments = self._edge_segments()
-        if self.links_layer is None:
-            self.links_layer = self.viewer.add_shapes(
-                segments,
-                shape_type="line",
-                name=f"{self.name}_kymograph_links",
-                edge_color="cyan",
-                edge_width=1.0,
-                face_color="transparent",
-                opacity=0.8,
+    def _link_render_data(
+        self,
+    ) -> tuple[KymographLinkRenderData, KymographLinkRenderData]:
+        if self.tracks is None or self.geometry is None:
+            return (KymographLinkRenderData.empty(), KymographLinkRenderData.empty())
+
+        return build_kymograph_link_data(
+            tracks=self.tracks,
+            geometry=self.geometry,
+            page_start=self.page_start,
+            page_length=self.page_length,
+            track_color_resolver=lambda track_id: self.tracks_viewer.colormap.map(track_id),
+            visible_nodes=self.visible_nodes,
+        )
+
+    def _sync_link_layer(
+        self,
+        *,
+        layer: KymographTrackLinks | None,
+        render_data: KymographLinkRenderData,
+        name: str,
+        edge_width: float,
+        visible: bool,
+    ) -> KymographTrackLinks | None:
+        if not render_data.segments:
+            self.remove_napari_layer(layer)
+            return None
+
+        if layer is None:
+            layer = KymographTrackLinks(
+                name=name,
+                tracks_viewer=self.tracks_viewer,
+                render_data=render_data,
+                edge_width=edge_width,
             )
-            self.links_layer.editable = False
+            self.viewer.add_layer(layer)
         else:
-            self.links_layer.data = segments
+            layer.update_render_data(render_data)
+        layer.visible = visible
+        return layer
+
+    def _refresh_links(self) -> None:
+        continuation_data, branch_data = self._link_render_data()
+        self.continuation_links_layer = self._sync_link_layer(
+            layer=self.continuation_links_layer,
+            render_data=continuation_data,
+            name=f"{self.name}_kymograph_paths",
+            edge_width=1.2,
+            visible=self.show_paths,
+        )
+        self.branch_links_layer = self._sync_link_layer(
+            layer=self.branch_links_layer,
+            render_data=branch_data,
+            name=f"{self.name}_kymograph_branches",
+            edge_width=1.0,
+            visible=self.show_branches,
+        )
 
     def _refresh_boundaries(self) -> None:
         if self.geometry is None:
@@ -403,6 +430,8 @@ class KymographLayerGroup:
             for layer in (
                 self.labels_layer,
                 self.points_layer,
+                self.continuation_links_layer,
+                self.branch_links_layer,
                 self.background_layer,
             )
             if layer is not None and layer in self.viewer.layers
@@ -431,8 +460,7 @@ class KymographLayerGroup:
             else:
                 visible = [node for node in visible_nodes if node in self._page_nodes()]
             self.labels_layer.update_label_colormap(visible)
-        if self.links_layer is not None:
-            self._refresh_links()
+        self._refresh_links()
 
     def center_view(self, node: int):
         if self.tracks is None or self.geometry is None:

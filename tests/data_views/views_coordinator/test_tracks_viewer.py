@@ -429,12 +429,22 @@ class TestKymographMode:
         tracks_viewer.update_tracks(tracks=tracks, name="test")
         tracks_viewer.set_view_mode("kymograph")
 
-        assert len(tracks_viewer.kymograph_layers.links_layer.data) == 4
+        assert tracks_viewer.kymograph_layers.continuation_links_layer is not None
+        assert tracks_viewer.kymograph_layers.branch_links_layer is not None
+        assert len(tracks_viewer.kymograph_layers.continuation_links_layer.data) == 1
+        assert len(
+            np.unique(
+                tracks_viewer.kymograph_layers.branch_links_layer.properties[
+                    "logical_link_id"
+                ]
+            )
+        ) == 2
 
         tracks_viewer.selected_nodes.add(6)
         tracks_viewer.set_display_mode("lineage")
 
-        assert len(tracks_viewer.kymograph_layers.links_layer.data) == 0
+        assert tracks_viewer.kymograph_layers.continuation_links_layer is None
+        assert tracks_viewer.kymograph_layers.branch_links_layer is None
 
 
 class TestSelectionManagement:

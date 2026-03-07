@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 
 DEFAULT_MAX_PAGE_WIDTH = 16_384
+BRANCH_DASH_LENGTH = 6.0
+BRANCH_GAP_LENGTH = 4.0
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,27 @@ class KymographGeometry:
     @property
     def kymograph_width(self) -> int:
         return int(self.t_size) * int(self.x_size)
+
+
+@dataclass(frozen=True)
+class KymographLinkRenderData:
+    segments: list[np.ndarray]
+    properties: dict[str, np.ndarray]
+    edge_colors: list[np.ndarray]
+
+    @classmethod
+    def empty(cls) -> "KymographLinkRenderData":
+        return cls(
+            segments=[],
+            properties={
+                "source_node": np.asarray([], dtype=int),
+                "target_node": np.asarray([], dtype=int),
+                "track_id": np.asarray([], dtype=int),
+                "link_kind": np.asarray([], dtype=object),
+                "logical_link_id": np.asarray([], dtype=int),
+            },
+            edge_colors=[],
+        )
 
 
 def infer_kymograph_geometry(
@@ -161,3 +185,168 @@ def frame_boundary_segments(
             )
         )
     return segments
+
+
+def dashed_line_segments(
+    source: tuple[float, float],
+    target: tuple[float, float],
+    *,
+    dash_length: float = BRANCH_DASH_LENGTH,
+    gap_length: float = BRANCH_GAP_LENGTH,
+) -> list[np.ndarray]:
+    source_arr = np.asarray(source, dtype=np.float32)
+    target_arr = np.asarray(target, dtype=np.float32)
+    vector = target_arr - source_arr
+    length = float(np.linalg.norm(vector))
+    if length <= 1e-6:
+        return [np.asarray([source_arr, target_arr], dtype=np.float32)]
+
+    direction = vector / length
+    segments: list[np.ndarray] = []
+    start = 0.0
+    stride = max(float(dash_length) + float(gap_length), 1e-6)
+    while start < length:
+        end = min(start + float(dash_length), length)
+        segments.append(
+            np.asarray(
+                [
+                    source_arr + direction * start,
+                    source_arr + direction * end,
+                ],
+                dtype=np.float32,
+            )
+        )
+        start += stride
+
+    return segments
+
+
+def build_kymograph_link_data(
+    *,
+    tracks,
+    geometry: KymographGeometry,
+    page_start: int,
+    page_length: int,
+    track_color_resolver: Callable[[int], np.ndarray],
+    visible_nodes: list[int] | str = "all",
+    branch_dash_length: float = BRANCH_DASH_LENGTH,
+    branch_gap_length: float = BRANCH_GAP_LENGTH,
+) -> tuple[KymographLinkRenderData, KymographLinkRenderData]:
+    visible_nodes_set = None
+    if not isinstance(visible_nodes, str):
+        visible_nodes_set = set(int(node) for node in visible_nodes)
+
+    continuation_segments: list[np.ndarray] = []
+    continuation_edge_colors: list[np.ndarray] = []
+    continuation_properties = {
+        "source_node": [],
+        "target_node": [],
+        "track_id": [],
+        "link_kind": [],
+        "logical_link_id": [],
+    }
+
+    branch_segments: list[np.ndarray] = []
+    branch_edge_colors: list[np.ndarray] = []
+    branch_properties = {
+        "source_node": [],
+        "target_node": [],
+        "track_id": [],
+        "link_kind": [],
+        "logical_link_id": [],
+    }
+
+    logical_link_id = 0
+    for source_node, target_node in tracks.graph.edges:
+        if visible_nodes_set is not None and (
+            source_node not in visible_nodes_set or target_node not in visible_nodes_set
+        ):
+            continue
+
+        source_coords = point_to_kymograph_coords(
+            timepoint=tracks.get_time(source_node),
+            position=tracks.get_position(source_node),
+            geometry=geometry,
+            page_start=page_start,
+            page_length=page_length,
+        )
+        target_coords = point_to_kymograph_coords(
+            timepoint=tracks.get_time(target_node),
+            position=tracks.get_position(target_node),
+            geometry=geometry,
+            page_start=page_start,
+            page_length=page_length,
+        )
+        if source_coords is None or target_coords is None:
+            continue
+
+        source_time = int(tracks.get_time(source_node))
+        target_time = int(tracks.get_time(target_node))
+        source_track_id = int(tracks.get_track_id(source_node))
+        target_track_id = int(tracks.get_track_id(target_node))
+        logical_link_id += 1
+
+        is_continuation = (
+            source_track_id == target_track_id
+            and target_time == source_time + 1
+        )
+        is_branch = source_track_id != target_track_id
+
+        if is_continuation:
+            continuation_segments.append(
+                np.asarray([source_coords, target_coords], dtype=np.float32)
+            )
+            continuation_edge_colors.append(
+                np.asarray(track_color_resolver(source_track_id), dtype=np.float32)
+            )
+            continuation_properties["source_node"].append(int(source_node))
+            continuation_properties["target_node"].append(int(target_node))
+            continuation_properties["track_id"].append(source_track_id)
+            continuation_properties["link_kind"].append("continuation")
+            continuation_properties["logical_link_id"].append(logical_link_id)
+        elif is_branch:
+            fragments = dashed_line_segments(
+                source_coords,
+                target_coords,
+                dash_length=branch_dash_length,
+                gap_length=branch_gap_length,
+            )
+            for fragment in fragments:
+                branch_segments.append(fragment)
+                branch_edge_colors.append(
+                    np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+                )
+                branch_properties["source_node"].append(int(source_node))
+                branch_properties["target_node"].append(int(target_node))
+                branch_properties["track_id"].append(target_track_id)
+                branch_properties["link_kind"].append("branch")
+                branch_properties["logical_link_id"].append(logical_link_id)
+
+    def _finalize(
+        segments: list[np.ndarray],
+        properties: dict[str, list],
+        edge_colors: list[np.ndarray],
+    ) -> KymographLinkRenderData:
+        if not segments:
+            return KymographLinkRenderData.empty()
+
+        return KymographLinkRenderData(
+            segments=segments,
+            properties={
+                "source_node": np.asarray(properties["source_node"], dtype=int),
+                "target_node": np.asarray(properties["target_node"], dtype=int),
+                "track_id": np.asarray(properties["track_id"], dtype=int),
+                "link_kind": np.asarray(properties["link_kind"], dtype=object),
+                "logical_link_id": np.asarray(properties["logical_link_id"], dtype=int),
+            },
+            edge_colors=edge_colors,
+        )
+
+    return (
+        _finalize(
+            continuation_segments,
+            continuation_properties,
+            continuation_edge_colors,
+        ),
+        _finalize(branch_segments, branch_properties, branch_edge_colors),
+    )

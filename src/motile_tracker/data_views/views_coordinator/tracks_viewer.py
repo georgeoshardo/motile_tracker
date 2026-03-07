@@ -407,6 +407,14 @@ class TracksViewer:
         self.kymograph_layers.set_show_boundaries(show_boundaries)
         self.kymograph_updated.emit()
 
+    def set_show_kymograph_paths(self, show_paths: bool) -> None:
+        self.kymograph_layers.set_show_paths(show_paths)
+        self.kymograph_updated.emit()
+
+    def set_show_kymograph_branches(self, show_branches: bool) -> None:
+        self.kymograph_layers.set_show_branches(show_branches)
+        self.kymograph_updated.emit()
+
     def _center_view(self, node: int) -> None:
         if self.view_mode == "kymograph":
             if self.kymograph_layers.geometry is not None and not self.kymograph_layers.node_on_page(node):
