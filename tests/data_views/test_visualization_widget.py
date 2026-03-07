@@ -114,6 +114,33 @@ def test_visualization_widget_is_not_height_capped(visualization_widget_2d):
     assert widget.maximumHeight() >= widget.sizeHint().height()
 
 
+def test_kymograph_link_visibility_checkboxes_toggle_layers(
+    visualization_widget_2d,
+):
+    widget, tracks_viewer = visualization_widget_2d
+
+    widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+
+    assert tracks_viewer.kymograph_layers.continuation_links_layer is not None
+    assert tracks_viewer.kymograph_layers.branch_links_layer is not None
+    assert widget.paths_checkbox.isChecked() is True
+    assert widget.branches_checkbox.isChecked() is True
+
+    widget.paths_checkbox.setChecked(False)
+    widget.branches_checkbox.setChecked(False)
+
+    assert tracks_viewer.kymograph_layers.show_paths is False
+    assert tracks_viewer.kymograph_layers.show_branches is False
+    assert tracks_viewer.kymograph_layers.continuation_links_layer.visible is False
+    assert tracks_viewer.kymograph_layers.branch_links_layer.visible is False
+
+    widget.paths_checkbox.setChecked(True)
+    widget.branches_checkbox.setChecked(True)
+
+    assert tracks_viewer.kymograph_layers.continuation_links_layer.visible is True
+    assert tracks_viewer.kymograph_layers.branch_links_layer.visible is True
+
+
 def test_contour_checkbox_updates_layer(visualization_widget):
     """Test that contour (fill) checkboxes are hidden, unless in contour mode, and that
     toggling them changes the contour state on the seg_layer."""

@@ -143,6 +143,12 @@ class LabelVisualizationWidget(QWidget):
         self.boundaries_checkbox = QCheckBox("Show frame boundaries")
         self.boundaries_checkbox.setChecked(True)
         self.boundaries_checkbox.stateChanged.connect(self._update_show_boundaries)
+        self.paths_checkbox = QCheckBox("Show paths")
+        self.paths_checkbox.setChecked(True)
+        self.paths_checkbox.stateChanged.connect(self._update_show_paths)
+        self.branches_checkbox = QCheckBox("Show branches")
+        self.branches_checkbox.setChecked(True)
+        self.branches_checkbox.stateChanged.connect(self._update_show_branches)
 
         self.kymograph_box = QGroupBox("Kymograph")
         kymograph_layout = QFormLayout(self.kymograph_box)
@@ -154,6 +160,8 @@ class LabelVisualizationWidget(QWidget):
         nav_row.addWidget(self.prev_page_button)
         nav_row.addWidget(self.next_page_button)
         kymograph_layout.addRow("Page", nav_row)
+        kymograph_layout.addRow(self.paths_checkbox)
+        kymograph_layout.addRow(self.branches_checkbox)
         kymograph_layout.addRow(self.boundaries_checkbox)
 
         self.highlight_widget = VisualizationConfigWidget(
@@ -210,6 +218,12 @@ class LabelVisualizationWidget(QWidget):
             self.boundaries_checkbox.isChecked()
         )
 
+    def _update_show_paths(self) -> None:
+        self.tracks_viewer.set_show_kymograph_paths(self.paths_checkbox.isChecked())
+
+    def _update_show_branches(self) -> None:
+        self.tracks_viewer.set_show_kymograph_branches(self.branches_checkbox.isChecked())
+
     def _update_widget_availability(self):
         """Update the radio buttons, show/hide the contour checkboxes when changing
         between contour and normal mode. Disable the background widget when the display
@@ -244,6 +258,12 @@ class LabelVisualizationWidget(QWidget):
         with QSignalBlocker(self.boundaries_checkbox):
             self.boundaries_checkbox.setChecked(
                 self.tracks_viewer.kymograph_layers.show_boundaries
+            )
+        with QSignalBlocker(self.paths_checkbox):
+            self.paths_checkbox.setChecked(self.tracks_viewer.kymograph_layers.show_paths)
+        with QSignalBlocker(self.branches_checkbox):
+            self.branches_checkbox.setChecked(
+                self.tracks_viewer.kymograph_layers.show_branches
             )
 
         can_show_kymograph = (
