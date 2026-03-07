@@ -297,6 +297,38 @@ class TestKymographMode:
         assert tracks_viewer.set_view_mode("kymograph") is True
         assert tracks_viewer.kymograph_layers.geometry is not None
 
+    def test_kymograph_mode_selects_labels_layer_and_uses_depth_safe_blending(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        viewer.add_image(
+            np.asarray(segmentation_2d, dtype=float),
+            name="raw",
+        )
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_kymograph_image_layer("raw")
+
+        assert tracks_viewer.set_view_mode("kymograph") is True
+        assert tracks_viewer.kymograph_layers.labels_layer is not None
+        assert (
+            tracks_viewer.kymograph_layers.labels_layer.blending
+            == "translucent_no_depth"
+        )
+        assert (
+            viewer.layers.selection.active
+            is tracks_viewer.kymograph_layers.labels_layer
+        )
+
     def test_kymograph_mode_detaches_external_time_series_layers(
         self,
         make_napari_viewer,

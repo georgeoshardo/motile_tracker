@@ -48,6 +48,7 @@ class KymographTrackLabels(TrackLabels):
             scale=(geometry.y_scale, geometry.x_scale),
             tracks_viewer=tracks_viewer,
         )
+        self.blending = "translucent_no_depth"
         self._refresh()
 
     def update_page(

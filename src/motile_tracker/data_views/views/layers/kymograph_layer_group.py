@@ -393,8 +393,33 @@ class KymographLayerGroup:
         self._refresh_points()
         self._refresh_links()
         self._refresh_boundaries()
+        self._ensure_interactive_selection()
         if self.viewer.dims.ndim == 2:
             self.viewer.dims.axis_labels = ("y", "x(time)")
+
+    def _ensure_interactive_selection(self) -> None:
+        interactive_layers = [
+            layer
+            for layer in (
+                self.labels_layer,
+                self.points_layer,
+                self.background_layer,
+            )
+            if layer is not None and layer in self.viewer.layers
+        ]
+        if not interactive_layers:
+            return
+
+        active_layer = self.viewer.layers.selection.active
+        if active_layer in interactive_layers:
+            return
+
+        preferred_layer = self.labels_layer or self.points_layer or self.background_layer
+        if preferred_layer is None or preferred_layer not in self.viewer.layers:
+            return
+
+        self.viewer.layers.selection.clear()
+        self.viewer.layers.selection.add(preferred_layer)
 
     def update_visible(self, visible_nodes: list[int] | str):
         self.visible_nodes = visible_nodes
