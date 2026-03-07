@@ -4,7 +4,9 @@ import dask.array as da
 import networkx as nx
 import numpy as np
 import pytest
+from funtracks.data_model import SolutionTracks
 
+from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 from motile_tracker.motile.backend import MotileRun, SolverParams
 from motile_tracker.motile.menus.run_editor import RunEditor
 
@@ -164,6 +166,35 @@ def test_run_creation(make_napari_viewer, segmentation_2d):
     run8 = editor7.get_run()
     assert run8 is not None
     assert run8.solver_params.max_edge_distance == 123.0
+
+
+def test_get_run_uses_original_run_input_while_in_kymograph_mode(
+    make_napari_viewer,
+    graph_2d,
+    segmentation_2d,
+):
+    viewer = make_napari_viewer()
+    viewer.add_labels(segmentation_2d, name="seg1", scale=(1, 2, 3))
+    viewer.add_image(segmentation_2d.astype(float), name="raw", scale=(1, 2, 3))
+
+    editor = RunEditor(viewer)
+    editor.layer_selection_box.setCurrentText("seg1")
+    original_run = editor.get_run()
+    assert original_run is not None
+
+    tracks = SolutionTracks(graph=graph_2d, segmentation=segmentation_2d, ndim=3)
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.set_kymograph_image_layer("raw")
+    assert tracks_viewer.set_view_mode("kymograph") is True
+
+    editor.new_run(original_run)
+    rerun = editor.get_run()
+
+    assert rerun is not None
+    assert np.array_equal(rerun.segmentation, segmentation_2d)
+    assert rerun.input_points is None
+    assert tuple(rerun.scale) == (1, 2, 3)
 
 
 def test_signal_emission(make_napari_viewer, segmentation_2d, qtbot):

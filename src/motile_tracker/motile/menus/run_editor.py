@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 )
 from tqdm import tqdm
 
+from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 from motile_tracker.motile.backend import MotileRun
 
 from .params_editor import SolverParamsEditor
@@ -50,6 +51,7 @@ class RunEditor(QGroupBox):
         self.solver_params_widget = SolverParamsEditor()
         self.run_name: QLineEdit
         self.layer_selection_box: QComboBox
+        self._editing_run: MotileRun | None = None
 
         # Generate Tracks button
         generate_tracks_btn = QPushButton("Run Tracking")
@@ -72,6 +74,8 @@ class RunEditor(QGroupBox):
         self.layer_selection_box.clear()
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels | napari.layers.Points):
+                if self._is_kymograph_derived_layer(layer):
+                    continue
                 self.layer_selection_box.addItem(layer.name)
         self.layer_selection_box.setCurrentText(prev_selection)
 
@@ -135,7 +139,46 @@ class RunEditor(QGroupBox):
         layer_name = self.layer_selection_box.currentText()
         if layer_name is None or layer_name not in self.viewer.layers:
             return None
-        return self.viewer.layers[layer_name]
+        layer = self.viewer.layers[layer_name]
+        if self._is_kymograph_derived_layer(layer):
+            return None
+        return layer
+
+    def _is_kymograph_derived_layer(self, layer: napari.layers.Layer) -> bool:
+        tracks_viewer = TracksViewer.get_instance(self.viewer)
+        return layer in {
+            tracks_viewer.kymograph_layers.labels_layer,
+            tracks_viewer.kymograph_layers.points_layer,
+        }
+
+    def _input_from_layer(
+        self,
+        input_layer: napari.layers.Layer,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, tuple[float, ...]]:
+        if isinstance(input_layer, napari.layers.Labels):
+            if isinstance(input_layer.data, da.core.Array):
+                input_seg = self._convert_da_to_np_array(input_layer.data)
+            else:
+                input_seg = input_layer.data
+            ndim = input_seg.ndim
+            if ndim > 4:
+                raise ValueError(
+                    "Expected segmentation to be at most 4D, found %d", ndim
+                )
+            elif ndim < 3:
+                raise ValueError(
+                    "Expected segmentation to be at least 3D, found %d", ndim
+                )
+            return input_seg, None, tuple(input_layer.scale)
+
+        input_points = input_layer.data
+        return None, input_points, tuple(input_layer.scale)
+
+    def _input_from_existing_run(
+        self,
+        run: MotileRun,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, tuple[float, ...]]:
+        return run.segmentation, run.input_points, tuple(run.scale)
 
     def _run_widget(self) -> QWidget:
         """Construct a widget where you set the run name and start solving.
@@ -167,29 +210,15 @@ class RunEditor(QGroupBox):
         """
         run_name = self.run_name.text()
         input_layer = self.get_input_layer()
-        if input_layer is None:
+        if input_layer is not None:
+            input_seg, input_points, scale = self._input_from_layer(input_layer)
+        elif self._editing_run is not None:
+            input_seg, input_points, scale = self._input_from_existing_run(
+                self._editing_run
+            )
+        else:
             warn("No input layer selected", stacklevel=2)
             return None
-        if isinstance(input_layer, napari.layers.Labels):
-            if isinstance(input_layer.data, da.core.Array):
-                input_seg = self._convert_da_to_np_array(
-                    input_layer.data
-                )  # silently convert to in-memory array
-            else:
-                input_seg = input_layer.data
-            ndim = input_seg.ndim
-            if ndim > 4:
-                raise ValueError(
-                    "Expected segmentation to be at most 4D, found %d", ndim
-                )
-            elif ndim < 3:
-                raise ValueError(
-                    "Expected segmentation to be at least 3D, found %d", ndim
-                )
-            input_points = None
-        elif isinstance(input_layer, napari.layers.Points):
-            input_seg = None
-            input_points = input_layer.data
         params = self.solver_params_widget.solver_params.copy()
         return MotileRun(
             graph=nx.DiGraph(),
@@ -198,7 +227,7 @@ class RunEditor(QGroupBox):
             solver_params=params,
             input_points=input_points,
             time=datetime.now(),
-            scale=input_layer.scale,
+            scale=scale,
         )
 
     def _convert_da_to_np_array(self, dask_array: da.core.Array) -> np.ndarray:
@@ -232,5 +261,6 @@ class RunEditor(QGroupBox):
         """Configure the run editor to copy the name and params of the given
         run.
         """
+        self._editing_run = run
         self.run_name.setText(run.run_name)
         self.solver_params_widget.new_params.emit(run.solver_params)
