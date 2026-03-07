@@ -97,6 +97,7 @@ class TracksViewer:
         self.selected_track = None
         self.track_id_color = [0, 0, 0, 0]
         self.force = False
+        self._detached_kymograph_layers: list[tuple[napari.layers.Layer, int, bool]] = []
         self._detached_kymograph_image_index: int | None = None
         self._detached_kymograph_image_visible = True
         self._spatial_ndisplay = int(self.viewer.dims.ndisplay)
@@ -271,7 +272,10 @@ class TracksViewer:
             self.tracking_layers.update_visible(self.visible)
         self.mode_updated.emit()
 
-    def _incompatible_kymograph_layer(self) -> str | None:
+    def _layers_to_detach_for_kymograph(
+        self,
+        selected_image: napari.layers.Image | None,
+    ) -> list[tuple[napari.layers.Layer, int, bool]]:
         spatial_layers = {
             layer
             for layer in (
@@ -281,31 +285,48 @@ class TracksViewer:
             )
             if layer is not None
         }
-        selected_image = self.kymograph_layers._resolved_image_layer()
-        for layer in self.viewer.layers:
+        detached_layers: list[tuple[napari.layers.Layer, int, bool]] = []
+        for index, layer in enumerate(list(self.viewer.layers)):
             if layer in spatial_layers or layer is selected_image:
                 continue
             if getattr(layer, "ndim", 2) > 2:
-                return layer.name
-        return None
+                detached_layers.append((layer, index, bool(layer.visible)))
+        return detached_layers
 
-    def _detach_image_for_kymograph(self) -> None:
+    def _detach_layers_for_kymograph(self) -> None:
         selected_image = self.kymograph_layers._resolved_image_layer()
+        selected_image_index = (
+            self.viewer.layers.index(selected_image)
+            if selected_image is not None and selected_image in self.viewer.layers
+            else None
+        )
+        self._detached_kymograph_layers = self._layers_to_detach_for_kymograph(
+            selected_image
+        )
+        for layer, _, _visible in reversed(self._detached_kymograph_layers):
+            if layer in self.viewer.layers:
+                self.viewer.layers.remove(layer)
+
         if selected_image is None:
             self.kymograph_layers.set_detached_image_layer(None)
             self._detached_kymograph_image_index = None
             self._detached_kymograph_image_visible = True
             return
 
-        if selected_image not in self.viewer.layers:
-            self.kymograph_layers.set_detached_image_layer(selected_image)
-            return
-
-        self._detached_kymograph_image_index = self.viewer.layers.index(selected_image)
+        self._detached_kymograph_image_index = selected_image_index
         self._detached_kymograph_image_visible = bool(selected_image.visible)
         self.viewer.layers.remove(selected_image)
         selected_image.visible = self._detached_kymograph_image_visible
         self.kymograph_layers.set_detached_image_layer(selected_image)
+
+    def _restore_detached_kymograph_layers(self) -> None:
+        for layer, index, visible in self._detached_kymograph_layers:
+            if layer not in self.viewer.layers:
+                self.viewer.add_layer(layer)
+                if index < len(self.viewer.layers) - 1:
+                    self.viewer.layers.move(len(self.viewer.layers) - 1, index)
+            layer.visible = visible
+        self._detached_kymograph_layers = []
 
     def _restore_detached_kymograph_image(self) -> None:
         layer = self.kymograph_layers.detached_image_layer
@@ -333,18 +354,13 @@ class TracksViewer:
             return True
 
         if mode == "kymograph":
-            incompatible = self._incompatible_kymograph_layer()
-            if incompatible is not None:
-                show_warning(
-                    f"Remove '{incompatible}' before entering kymograph mode."
-                )
-                return False
             self._spatial_ndisplay = int(self.viewer.dims.ndisplay)
             self._spatial_axis_labels = tuple(self.viewer.dims.axis_labels)
             self.tracking_layers.remove_napari_layers()
-            self._detach_image_for_kymograph()
+            self._detach_layers_for_kymograph()
             ok, message = self.kymograph_layers.activate()
             if not ok:
+                self._restore_detached_kymograph_layers()
                 self._restore_detached_kymograph_image()
                 self.tracking_layers.add_napari_layers()
                 show_warning(message)
@@ -354,6 +370,7 @@ class TracksViewer:
         else:
             self.kymograph_layers.deactivate()
             self._restore_detached_kymograph_image()
+            self._restore_detached_kymograph_layers()
             self.tracking_layers.add_napari_layers()
             self.viewer.dims.ndisplay = self._spatial_ndisplay
             if len(self._spatial_axis_labels) == self.viewer.dims.ndim:

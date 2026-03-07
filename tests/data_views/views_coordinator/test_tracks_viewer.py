@@ -297,6 +297,38 @@ class TestKymographMode:
         assert tracks_viewer.set_view_mode("kymograph") is True
         assert tracks_viewer.kymograph_layers.geometry is not None
 
+    def test_kymograph_mode_detaches_external_time_series_layers(
+        self,
+        make_napari_viewer,
+        graph_2d,
+        segmentation_2d,
+    ):
+        viewer = make_napari_viewer()
+        viewer.add_image(
+            np.asarray(segmentation_2d, dtype=float),
+            name="raw",
+        )
+        input_labels = viewer.add_labels(
+            segmentation_2d,
+            name="tracked_labels_trench_0",
+        )
+        tracks = SolutionTracks(
+            graph=graph_2d,
+            segmentation=segmentation_2d,
+            ndim=3,
+        )
+
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        tracks_viewer.set_kymograph_image_layer("raw")
+
+        assert tracks_viewer.set_view_mode("kymograph") is True
+        assert "tracked_labels_trench_0" not in [layer.name for layer in viewer.layers]
+
+        tracks_viewer.set_view_mode("spatial")
+
+        assert viewer.layers["tracked_labels_trench_0"] is input_labels
+
     def test_kymograph_mode_requires_image_for_point_tracks(
         self,
         make_napari_viewer,

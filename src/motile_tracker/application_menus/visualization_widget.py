@@ -5,6 +5,7 @@ from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QRadioButton,
@@ -69,7 +70,7 @@ class ModeWidget(QWidget):
         box = QGroupBox(title)
 
         self.radio_group = QButtonGroup(self)
-        box_layout = QHBoxLayout(box)
+        box_layout = QVBoxLayout(box)
 
         for index, (text, mode) in enumerate(options):
             btn = QRadioButton(text)
@@ -82,7 +83,7 @@ class ModeWidget(QWidget):
 
         self.radio_group.buttonToggled.connect(self._on_toggled)
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.addWidget(box)
 
     @property
@@ -144,22 +145,16 @@ class LabelVisualizationWidget(QWidget):
         self.boundaries_checkbox.stateChanged.connect(self._update_show_boundaries)
 
         self.kymograph_box = QGroupBox("Kymograph")
-        kymograph_layout = QVBoxLayout(self.kymograph_box)
-
-        image_row = QHBoxLayout()
-        image_row.addWidget(self.image_layer_box)
-        kymograph_layout.addLayout(image_row)
-
-        page_row = QHBoxLayout()
-        page_row.addWidget(self.page_start_box)
-        page_row.addWidget(self.page_length_box)
-        kymograph_layout.addLayout(page_row)
+        kymograph_layout = QFormLayout(self.kymograph_box)
+        kymograph_layout.addRow("Image Layer", self.image_layer_box)
+        kymograph_layout.addRow("Page Start", self.page_start_box)
+        kymograph_layout.addRow("Page Length", self.page_length_box)
 
         nav_row = QHBoxLayout()
         nav_row.addWidget(self.prev_page_button)
         nav_row.addWidget(self.next_page_button)
-        kymograph_layout.addLayout(nav_row)
-        kymograph_layout.addWidget(self.boundaries_checkbox)
+        kymograph_layout.addRow("Page", nav_row)
+        kymograph_layout.addRow(self.boundaries_checkbox)
 
         self.highlight_widget = VisualizationConfigWidget(
             "Highlight opacity", default_opacity=1.0, default_contour=True
