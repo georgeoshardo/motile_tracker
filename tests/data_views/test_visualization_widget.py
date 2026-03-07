@@ -108,6 +108,12 @@ def test_view_mode_switches_to_kymograph_and_disables_image_selector(
     assert widget.image_layer_box.currentText() == "raw"
 
 
+def test_visualization_widget_is_not_height_capped(visualization_widget_2d):
+    widget, _ = visualization_widget_2d
+
+    assert widget.maximumHeight() >= widget.sizeHint().height()
+
+
 def test_contour_checkbox_updates_layer(visualization_widget):
     """Test that contour (fill) checkboxes are hidden, unless in contour mode, and that
     toggling them changes the contour state on the seg_layer."""

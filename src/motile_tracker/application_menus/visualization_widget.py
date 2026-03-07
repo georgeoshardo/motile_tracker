@@ -182,7 +182,6 @@ class LabelVisualizationWidget(QWidget):
         layout.addWidget(self.foreground_widget)
         layout.addWidget(self.background_widget)
 
-        self.setMaximumHeight(450)
         self._update_widget_availability()
 
     def _update_view_mode(self, mode: str) -> None:

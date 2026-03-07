@@ -34,7 +34,6 @@ class MenuWidget(QScrollArea):
         self._visualization_index = 3
 
         self.tabwidget = QTabWidget()
-        self.tabwidget.setTabPosition(QTabWidget.West)
         self.tabwidget.setUsesScrollButtons(True)
         self.tabwidget.tabBar().setExpanding(False)
 
