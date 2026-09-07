@@ -314,24 +314,38 @@ def build_kymograph_link_data(
         target_track_id = track_ids[target_node]
         logical_link_id += 1
 
-        is_continuation = (
-            source_track_id == target_track_id and target_time == source_time + 1
-        )
         is_branch = source_track_id != target_track_id
 
-        if is_continuation:
-            continuation_segments.append(
-                np.asarray([source_coords, target_coords], dtype=np.float32)
+        if not is_branch:
+            # Same track: a solid line between consecutive frames. An edge that
+            # skips frames (a missed detection, or a link the user drew across a
+            # gap) is drawn dashed in the track colour so the skip is visible,
+            # spanning the frames in between.
+            track_color = np.asarray(
+                track_color_resolver(source_track_id), dtype=np.float32
             )
-            continuation_edge_colors.append(
-                np.asarray(track_color_resolver(source_track_id), dtype=np.float32)
-            )
-            continuation_properties["source_node"].append(int(source_node))
-            continuation_properties["target_node"].append(int(target_node))
-            continuation_properties["track_id"].append(source_track_id)
-            continuation_properties["link_kind"].append("continuation")
-            continuation_properties["logical_link_id"].append(logical_link_id)
-        elif is_branch:
+            if target_time == source_time + 1:
+                link_kind = "continuation"
+                fragments = [
+                    np.asarray([source_coords, target_coords], dtype=np.float32)
+                ]
+            else:
+                link_kind = "gap"
+                fragments = dashed_line_segments(
+                    source_coords,
+                    target_coords,
+                    dash_length=branch_dash_length,
+                    gap_length=branch_gap_length,
+                )
+            for fragment in fragments:
+                continuation_segments.append(fragment)
+                continuation_edge_colors.append(track_color)
+                continuation_properties["source_node"].append(int(source_node))
+                continuation_properties["target_node"].append(int(target_node))
+                continuation_properties["track_id"].append(source_track_id)
+                continuation_properties["link_kind"].append(link_kind)
+                continuation_properties["logical_link_id"].append(logical_link_id)
+        else:
             fragments = dashed_line_segments(
                 source_coords,
                 target_coords,

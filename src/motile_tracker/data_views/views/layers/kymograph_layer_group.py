@@ -6,6 +6,9 @@ import napari
 import numpy as np
 from napari.utils.notifications import show_info
 
+from motile_tracker.data_views.views.kymograph_time_slider import (
+    KymographTimeSlider,
+)
 from motile_tracker.data_views.views.kymograph_utils import (
     KymographGeometry,
     KymographLinkRenderData,
@@ -57,6 +60,12 @@ class KymographLayerGroup:
         self.visible_nodes: list[int] | str = "all"
 
         self.background_layer: napari.layers.Image | None = None
+        # slider under the canvas, spanning its width, that pans the kymograph
+        # along time one frame per step; created once, shown only in kymograph mode
+        self.time_slider: KymographTimeSlider | None = None
+        self._time_slider_dock = None  # only used when the canvas layout is not found
+        self._time_events_connected = False
+        self._syncing_time = False
         self.labels_layer: KymographTrackLabels | None = None
         self.points_layer: KymographTrackPoints | None = None
         self.continuation_links_layer: KymographTrackLinks | None = None
@@ -167,6 +176,7 @@ class KymographLayerGroup:
             self.viewer.layers.remove(layer)
 
     def remove_napari_layers(self) -> None:
+        self._hide_time_slider()
         self.remove_napari_layer(self.background_layer)
         self.remove_napari_layer(self.continuation_links_layer)
         self.remove_napari_layer(self.branch_links_layer)
@@ -446,9 +456,11 @@ class KymographLayerGroup:
         self._refresh_points()
         self._refresh_links()
         self._refresh_boundaries()
+        self._refresh_time_slider()
         self._ensure_interactive_selection()
         if self.viewer.dims.ndim == 2:
             self.viewer.dims.axis_labels = ("y", "x(time)")
+        self._sync_time_slider_from_camera()
 
     def _ensure_interactive_selection(self) -> None:
         interactive_layers = [
@@ -477,6 +489,165 @@ class KymographLayerGroup:
 
         self.viewer.layers.selection.clear()
         self.viewer.layers.selection.add(preferred_layer)
+
+    # ------------------------------------------------------------------
+    # time slider
+    # ------------------------------------------------------------------
+    def _refresh_time_slider(self) -> None:
+        """Show the time slider under the canvas, fitted to the movie.
+
+        The slider is created and placed once and hidden when the kymograph is not
+        shown. Moving it pans the view to that frame (see show_timepoint) and
+        panning the view moves it (see _sync_time_slider_from_camera).
+        """
+        if self.geometry is None:
+            return
+        if self.time_slider is None:
+            self.time_slider = KymographTimeSlider()
+            self.time_slider.timepoint_changed.connect(self.show_timepoint)
+            self._attach_time_slider()
+        self.time_slider.set_range(self.geometry.t_size, self.page_length)
+        self.time_slider.setVisible(True)
+        if self._time_slider_dock is not None:
+            self._time_slider_dock.setVisible(True)
+        self._connect_time_events()
+
+    def _attach_time_slider(self) -> None:
+        """Place the slider directly under the canvas, spanning its full width.
+
+        napari's central viewer widget stacks the canvas and its own dims sliders
+        in a vertical layout; the time slider goes in there right below the canvas.
+        Should that layout not be found (another napari layout, or a viewer without
+        a window), the slider is docked at the bottom of the window instead.
+        """
+        window = getattr(self.viewer, "window", None)
+        if window is None:
+            return
+        try:
+            canvas = window._qt_viewer.canvas.native
+            layout = canvas.parentWidget().layout()
+            index = layout.indexOf(canvas)
+        except AttributeError:
+            layout, index = None, -1
+        if layout is None or index < 0:
+            self._time_slider_dock = window.add_dock_widget(
+                self.time_slider, area="bottom", name="Kymograph time"
+            )
+            return
+        # A slider left behind by an earlier layer group for this viewer (a new
+        # TracksViewer is made per test, for instance) is replaced, not stacked:
+        # every extra row would shrink the canvas.
+        for position in reversed(range(layout.count())):
+            widget = layout.itemAt(position).widget()
+            if (
+                isinstance(widget, KymographTimeSlider)
+                and widget is not self.time_slider
+            ):
+                layout.removeWidget(widget)
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        layout.insertWidget(layout.indexOf(canvas) + 1, self.time_slider)
+
+    def _hide_time_slider(self) -> None:
+        self._disconnect_time_events()
+        if self.time_slider is not None:
+            self.time_slider.setVisible(False)
+        if self._time_slider_dock is not None:
+            self._time_slider_dock.setVisible(False)
+
+    def _connect_time_events(self) -> None:
+        if self._time_events_connected:
+            return
+        self.viewer.camera.events.center.connect(self._on_camera_center)
+        self._time_events_connected = True
+
+    def _disconnect_time_events(self) -> None:
+        if not self._time_events_connected:
+            return
+        self.viewer.camera.events.center.disconnect(self._on_camera_center)
+        self._time_events_connected = False
+
+    @property
+    def current_timepoint(self) -> int | None:
+        """The timepoint the time slider points at, or None without a slider."""
+        if self.time_slider is None:
+            return None
+        return self.time_slider.value()
+
+    def _on_camera_center(self, event=None) -> None:
+        if not self.active or self._syncing_time or self.geometry is None:
+            return
+        self._sync_time_slider_from_camera()
+
+    def _timepoint_at_camera_center(self) -> int:
+        """The timepoint whose frame is under the centre of the view, limited to
+        the frames on the current page."""
+        frame_width = self.geometry.frame_world_width
+        x_center = float(self.viewer.camera.center[-1])
+        start, stop = visible_frame_range(
+            self.geometry, self.page_start, self.page_length
+        )
+        timepoint = start + int(np.floor(x_center / frame_width))
+        return int(np.clip(timepoint, start, max(start, stop - 1)))
+
+    def _sync_time_slider_from_camera(self) -> None:
+        if self._syncing_time or self.geometry is None or self.time_slider is None:
+            return
+        self.time_slider.set_value_silently(self._timepoint_at_camera_center())
+
+    def _visible_half_width_frames(self) -> float:
+        """Half the width of the canvas, in frames, at the current zoom."""
+        if self.geometry is None:
+            return 0.0
+        zoom = float(self.viewer.camera.zoom)
+        if zoom <= 0:
+            return 0.0
+        canvas_size = getattr(self.viewer, "_canvas_size", (600, 800))
+        canvas_width = float(canvas_size[1])
+        return canvas_width / zoom / self.geometry.frame_world_width / 2.0
+
+    def show_timepoint(self, timepoint: int) -> None:
+        """Pan the view so that the frame at `timepoint` is centred, turning the
+        page first when that frame (or the part of the movie around it that fits on
+        screen) is not on the current page.
+        """
+        if self.geometry is None or not self.active:
+            return
+        t_size = int(self.geometry.t_size)
+        timepoint = int(np.clip(int(timepoint), 0, t_size - 1))
+
+        self._syncing_time = True
+        try:
+            start, stop = visible_frame_range(
+                self.geometry, self.page_start, self.page_length
+            )
+            half_width = self._visible_half_width_frames()
+            off_page = timepoint < start or timepoint >= stop
+            # the view would show empty space where more frames exist; only worth
+            # a page turn when the view fits on a page at all
+            view_fits = 2 * half_width <= self.page_length
+            view_past_start = view_fits and timepoint - half_width < start and start > 0
+            view_past_stop = (
+                view_fits and timepoint + half_width >= stop and stop < t_size
+            )
+            if off_page or view_past_start or view_past_stop:
+                new_start = clamp_page_start(
+                    timepoint - self.page_length // 2, self.geometry, self.page_length
+                )
+                if new_start != self.page_start:
+                    self.set_page(page_start=new_start)
+
+            x_center = (
+                timepoint - self.page_start + 0.5
+            ) * self.geometry.frame_world_width
+            camera_center = list(self.viewer.camera.center)
+            camera_center[-1] = x_center
+            self.viewer.camera.center = tuple(camera_center)
+            if self.time_slider is not None:
+                self.time_slider.set_value_silently(timepoint)
+        finally:
+            self._syncing_time = False
 
     def update_visible(self, visible_nodes: list[int] | str):
         self.visible_nodes = visible_nodes

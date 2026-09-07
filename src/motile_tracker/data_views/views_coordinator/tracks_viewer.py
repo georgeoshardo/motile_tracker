@@ -175,9 +175,10 @@ class TracksViewer:
         else:
             display_text = "All"
 
-        self.viewer.text_overlay.text = (
-            BASE_TEXT + f"{display_text}\nCurrent view: {view_text}"
-        )
+        text = BASE_TEXT + f"{display_text}\nCurrent view: {view_text}"
+        if self.view_mode == "kymograph":
+            text += "\nTime slider (below): pan along time, one frame per step"
+        self.viewer.text_overlay.text = text
         self.viewer.text_overlay.visible = True
         self.viewer.text_overlay.font_size = 8
 
