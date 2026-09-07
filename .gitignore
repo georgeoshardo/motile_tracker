@@ -94,3 +94,6 @@ venv/
 claude.md
 .claude
 TESTING_STRATEGY.md
+
+# local datasets (zarr stores are large and never committed)
+*.zarr/

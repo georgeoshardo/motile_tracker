@@ -60,5 +60,7 @@ def test_tracking_and_editing_group_widgets(qtbot, make_napari_viewer):
     editing = EditingGroupWidget(viewer)
     assert isinstance(tracking, StartupWidget)
     assert isinstance(editing, StartupWidget)
-    # Should initialize subset of widgets
-    assert len(viewer.window.dock_widgets) == 7
+    # Should initialize subset of widgets: the 4 tracking widgets plus the editing
+    # widgets not already among them (Editing && Selection, Kymograph Data, Features,
+    # Groups)
+    assert len(viewer.window.dock_widgets) == 8

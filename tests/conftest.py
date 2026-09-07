@@ -332,3 +332,74 @@ def segmentation_2d(graph_2d):
 @pytest.fixture
 def segmentation_3d(graph_3d):
     return np.asarray(Tracks(graph_3d, ndim=4, time_attr="t").segmentation)
+
+
+@pytest.fixture
+def geff_collection_store(tmp_path, segmentation_2d):
+    """A zarr v3 store with two groups, each holding a zarr v2 GEFF next to the
+    `images` and `segmentation` arrays it refers to through `related_objects`
+    (the layout of mother machine trench datasets).
+
+    The graph mirrors graph_2d: nodes 1..6 with a division 1->(2, 3), the track
+    3->4->5 and an isolated node 6. Segmentation labels equal the node ids and are
+    exposed to the GEFF as the `seg_id` property.
+    """
+    import networkx as nx
+    import zarr
+    from geff import GeffMetadata
+    from geff import write as write_geff
+    from geff_spec import RelatedObject
+
+    store = tmp_path / "collection.zarr"
+    root = zarr.open_group(store, mode="w", zarr_format=3)
+    nodes = {
+        1: (0, 50.0, 50.0),
+        2: (1, 20.0, 80.0),
+        3: (1, 60.0, 45.0),
+        4: (2, 1.5, 1.5),
+        5: (4, 1.5, 1.5),
+        6: (4, 97.5, 97.5),
+    }
+    tracklets = {1: 1, 2: 2, 3: 3, 4: 3, 5: 3, 6: 5}
+    lineages = {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 2}
+
+    for name in ["trench_a", "trench_b"]:
+        group = root.create_group(name)
+        segmentation = np.asarray(segmentation_2d, dtype=np.uint16)
+        group.create_array("segmentation", data=segmentation, chunks=segmentation.shape)
+        group.create_array(
+            "images",
+            data=segmentation.astype(np.float32) * 10.0,
+            chunks=segmentation.shape,
+        )
+
+        graph = nx.DiGraph()
+        for node, (t, y, x) in nodes.items():
+            graph.add_node(
+                node,
+                time=t,
+                y=y,
+                x=x,
+                seg_id=node,
+                tracklet=tracklets[node],
+                lineage=lineages[node],
+            )
+        graph.add_edges_from([(1, 2), (1, 3), (3, 4), (4, 5)])
+
+        geff_path = store / name / "tracking_graph.geff"
+        write_geff(
+            graph,
+            geff_path,
+            axis_names=["time", "y", "x"],
+            axis_types=["time", "space", "space"],
+            zarr_format=2,
+        )
+        metadata = GeffMetadata.read(geff_path)
+        metadata.related_objects = [
+            RelatedObject(type="labels", path="../segmentation", label_prop="seg_id"),
+            RelatedObject(type="image", path="../images"),
+        ]
+        metadata.track_node_props = {"tracklet": "tracklet", "lineage": "lineage"}
+        metadata.write(geff_path)
+
+    return store
