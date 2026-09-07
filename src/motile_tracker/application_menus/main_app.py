@@ -11,6 +11,9 @@ from motile_tracker.application_menus.editing_selection_menu import (
 )
 from motile_tracker.application_menus.feature_widget import FeatureWidget
 from motile_tracker.application_menus.group_widget import GroupWidget
+from motile_tracker.application_menus.kymograph_data_widget import (
+    KymographDataWidget,
+)
 from motile_tracker.application_menus.menu_manager import MenuManager
 from motile_tracker.application_menus.track_list_widget import TrackListWidget
 from motile_tracker.application_menus.visualization_widget import (
@@ -28,6 +31,7 @@ MENU_WIDGETS = {
     "Getting Started": {"widget": WelcomeWidget, "location": "right"},
     "Tracking": {"widget": MotileWidget, "location": "right"},
     "Tracks List": {"widget": TrackListWidget, "location": "right"},
+    "Kymograph Data": {"widget": KymographDataWidget, "location": "right"},
     "Editing && Selection": {"widget": EditingSelectionWidget, "location": "right"},
     "Visualization": {"widget": VisualizationWidget, "location": "right"},
     "Features": {"widget": FeatureWidget, "location": "right"},
@@ -66,6 +70,7 @@ class StartupWidget(QWidget):
         elif mode == "editing":
             subset = [
                 "Tracks List",
+                "Kymograph Data",
                 "Editing && Selection",
                 "Visualization",
                 "Features",
@@ -132,6 +137,7 @@ def _make_single_menu_widget_class(widget_name):
 GettingStarted_LauncherWidget = _make_single_menu_widget_class("Getting Started")
 Tracking_LauncherWidget = _make_single_menu_widget_class("Tracking")
 TrackList_LauncherWidget = _make_single_menu_widget_class("Tracks List")
+KymographData_LauncherWidget = _make_single_menu_widget_class("Kymograph Data")
 EditingSelection_LauncherWidget = _make_single_menu_widget_class("Editing && Selection")
 Visualization_LauncherWidget = _make_single_menu_widget_class("Visualization")
 Feature_LauncherWidget = _make_single_menu_widget_class("Features")

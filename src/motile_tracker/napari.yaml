@@ -24,6 +24,9 @@ contributions:
     - id: motile-tracker.tracks_list
       python_name: motile_tracker.application_menus.main_app:TrackList_LauncherWidget
       title: "Open Tracks List menu"
+    - id: motile-tracker.kymograph_data
+      python_name: motile_tracker.application_menus.main_app:KymographData_LauncherWidget
+      title: "Open Kymograph Data menu"
     - id: motile-tracker.editing_selection
       python_name: motile_tracker.application_menus.main_app:EditingSelection_LauncherWidget
       title: "Open Editing && Selection menu"
@@ -67,6 +70,8 @@ contributions:
       display_name: Widget - Tracking
     - command: motile-tracker.tracks_list
       display_name: Widget - Tracks List
+    - command: motile-tracker.kymograph_data
+      display_name: Widget - Kymograph Data
     - command: motile-tracker.editing_selection
       display_name: Widget - Editing & Selection
     - command: motile-tracker.visualization

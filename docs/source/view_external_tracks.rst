@@ -50,6 +50,42 @@ match label id of the corresponding segmentation.
 An example script that loads a tracks object from a CSV and segmentation array
 is provided in ``scripts/view_external_tracks.py``.
 
+Loading GEFF groups with their images (kymograph view)
+******************************************************
+
+Datasets that keep one GEFF per field of view next to the image and label arrays
+it describes (for example one group per mother machine trench) can be loaded
+without any column mapping from the ``Kymograph Data`` tab, as long as the GEFF
+metadata points at the arrays through ``related_objects``::
+
+    trenches.zarr/
+        trench_0165/
+            images                 (T, Y, X) raw image stack
+            segmentation           (T, Y, X) labels, label value == GEFF seg_id
+            tracking_graph.geff    related_objects -> ../segmentation, ../images
+        trench_0187/
+            ...
+
+Select the store with ``Browse…``: every GEFF group in it is listed by the name
+of the group that holds it. ``Load`` adds the image as a napari layer, adds the
+tracks to the Tracks List (so they can be edited, saved and exported like any
+other tracks) and, when ``Open in kymograph view`` is checked, switches the
+viewer to the kymograph view of that group with the image behind it. The arrow
+buttons step through the groups; by default the image layers of earlier loads
+are removed to keep the layer list short (the tracks stay in the Tracks List).
+
+The property names are taken from the GEFF metadata: the typed ``axes`` give the
+time and position properties, ``track_node_props`` give the tracklet and lineage
+ids, and the ``label_prop`` of the labels object gives the segmentation ids.
+
+The same can be done from the command line, which is convenient for opening one
+trench straight away::
+
+    motile_tracker --data trenches.zarr --group trench_0165
+
+Without ``--group`` the first group is loaded; ``--spatial`` shows it in the
+regular spatial view instead of the kymograph.
+
 Once you have a Tracks object in the format described above, the following code
 will view it in the Tree View and create synchronized napari layers (Points,
 Labels, and Tracks) to visualize the provided tracks:

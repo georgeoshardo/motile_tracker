@@ -78,6 +78,7 @@ class WelcomeWidget(QWidget):
 - If you have segmentation data, you can view additional features (e.g. area/volume) in the Lineage View (press [W])
 - Assign objects to custom groups to keep track of different cell populations or conditions ('Groups' menu).
 - Import data from external tracks from CSV or GEFF in the Tracks List menu.
+- Load a zarr store of GEFF groups with their images (e.g. mother machine trenches) from the Kymograph Data menu, straight into the kymograph view.
         """)
 
         layout.addWidget(content)
