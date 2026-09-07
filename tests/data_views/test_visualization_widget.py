@@ -1,46 +1,30 @@
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
-from funtracks.data_model import SolutionTracks
 
 from motile_tracker.application_menus.visualization_widget import (
-    LabelVisualizationWidget,
+    VisualizationWidget,
 )
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
+@pytest.fixture(autouse=True)
+def clear_viewer_layers(viewer):
+    """Clear viewer layers between tests."""
+    yield
+    viewer.layers.clear()
+
+
 @pytest.fixture
-def visualization_widget(make_napari_viewer, graph_3d, segmentation_3d, qtbot):
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_3d, segmentation=segmentation_3d, ndim=4)
-
+def visualization_widget(viewer, solution_tracks_3d, qtbot):
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_3d, name="test")
 
-    widget = LabelVisualizationWidget(viewer)
+    widget = VisualizationWidget(viewer)
     qtbot.addWidget(widget)
 
     assert tracks_viewer.tracking_layers.seg_layer is not None
-
-    return widget, tracks_viewer
-
-
-@pytest.fixture
-def visualization_widget_2d(
-    make_napari_viewer,
-    graph_2d,
-    segmentation_2d,
-    qtbot,
-):
-    viewer = make_napari_viewer()
-    viewer.add_image(np.asarray(segmentation_2d, dtype=float), name="raw")
-    tracks = SolutionTracks(graph=graph_2d, segmentation=segmentation_2d, ndim=3)
-
-    tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
-    tracks_viewer.set_kymograph_image_layer("raw")
-
-    widget = LabelVisualizationWidget(viewer)
-    qtbot.addWidget(widget)
 
     return widget, tracks_viewer
 
@@ -87,60 +71,6 @@ def test_opacity_updates_seg_layer(visualization_widget):
     assert layer.background_opacity == pytest.approx(0.75)
 
 
-def test_kymograph_button_disabled_for_3d_tracks(visualization_widget):
-    widget, _ = visualization_widget
-
-    assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is False
-
-
-def test_view_mode_switches_to_kymograph_and_disables_image_selector(
-    visualization_widget_2d,
-):
-    widget, tracks_viewer = visualization_widget_2d
-
-    assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is True
-    assert widget.image_layer_box.currentText() == "raw"
-
-    widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
-
-    assert tracks_viewer.view_mode == "kymograph"
-    assert widget.image_layer_box.isEnabled() is False
-    assert widget.image_layer_box.currentText() == "raw"
-
-
-def test_visualization_widget_is_not_height_capped(visualization_widget_2d):
-    widget, _ = visualization_widget_2d
-
-    assert widget.maximumHeight() >= widget.sizeHint().height()
-
-
-def test_kymograph_link_visibility_checkboxes_toggle_layers(
-    visualization_widget_2d,
-):
-    widget, tracks_viewer = visualization_widget_2d
-
-    widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
-
-    assert tracks_viewer.kymograph_layers.continuation_links_layer is not None
-    assert tracks_viewer.kymograph_layers.branch_links_layer is not None
-    assert widget.paths_checkbox.isChecked() is True
-    assert widget.branches_checkbox.isChecked() is True
-
-    widget.paths_checkbox.setChecked(False)
-    widget.branches_checkbox.setChecked(False)
-
-    assert tracks_viewer.kymograph_layers.show_paths is False
-    assert tracks_viewer.kymograph_layers.show_branches is False
-    assert tracks_viewer.kymograph_layers.continuation_links_layer.visible is False
-    assert tracks_viewer.kymograph_layers.branch_links_layer.visible is False
-
-    widget.paths_checkbox.setChecked(True)
-    widget.branches_checkbox.setChecked(True)
-
-    assert tracks_viewer.kymograph_layers.continuation_links_layer.visible is True
-    assert tracks_viewer.kymograph_layers.branch_links_layer.visible is True
-
-
 def test_contour_checkbox_updates_layer(visualization_widget):
     """Test that contour (fill) checkboxes are hidden, unless in contour mode, and that
     toggling them changes the contour state on the seg_layer."""
@@ -179,21 +109,13 @@ def test_contour_checkbox_updates_layer(visualization_widget):
     "mode", ["all", "visible_no_contours", "visible_with_contours"]
 )
 def test_update_label_colormap_when_selecting(
-    make_napari_viewer,
-    graph_3d,
-    segmentation_3d,
+    viewer,
+    solution_tracks_3d,
     mode,
 ):
     """Test the actual values on the label colormap"""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(
-        graph=graph_3d,
-        segmentation=segmentation_3d,
-        ndim=4,
-    )
-
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_3d, name="test")
 
     seg_layer = tracks_viewer.tracking_layers.seg_layer
     assert hasattr(seg_layer, "update_label_colormap")
@@ -214,7 +136,7 @@ def test_update_label_colormap_when_selecting(
     assert seg_layer.highlight_opacity == 1.0
 
     # Make the viewer highlight one label
-    tracks_viewer.selected_nodes = [k2]
+    tracks_viewer.selected_nodes.add_list([k2], append=False)
 
     # Call update_label_colormap in each test mode
     if mode == "all":
@@ -262,3 +184,312 @@ def test_update_label_colormap_when_selecting(
         )  # highlighted
 
         assert set(seg_layer.filled_labels) == {k1, k2}
+
+
+def test_selecting_node_does_not_highlight_same_track_nodes(
+    viewer,
+    solution_tracks_3d_with_division,
+):
+    """Highlighting one node must not change the opacity of other nodes that share
+    its track id.
+
+    Regression test for per-track color-array aliasing: _get_colormap must give
+    each node its own color array, because set_opacity mutates the alpha in place.
+    In solution_tracks_3d_with_division, nodes 1 and 2 share track id 1 (the
+    tracklet before the division). Selecting node 2 must leave node 1 at the
+    foreground opacity, not the highlight opacity.
+    """
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_3d_with_division, name="test")
+    seg_layer = tracks_viewer.tracking_layers.seg_layer
+
+    same_track_unselected, selected = 1, 2
+    assert tracks_viewer.tracks.get_track_id(
+        same_track_unselected
+    ) == tracks_viewer.tracks.get_track_id(selected)
+
+    tracks_viewer.selected_nodes.add(selected, append=False)
+    seg_layer.update_label_colormap("all")
+
+    color_dict = seg_layer.colormap.color_dict
+    assert color_dict[selected][-1] == pytest.approx(seg_layer.highlight_opacity)
+    assert color_dict[same_track_unselected][-1] == pytest.approx(
+        seg_layer.foreground_opacity
+    )
+
+
+# Ortho-views integration tests
+class TestOrthoViewsIntegration:
+    """Tests for orthogonal views checkbox and initialization."""
+
+    def test_ortho_views_checkbox_initially_unchecked(self, visualization_widget):
+        """Test that the ortho views checkbox starts unchecked."""
+        widget, _ = visualization_widget
+        assert not widget.show_ortho_views.isChecked()
+
+    @patch("motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS", {})
+    @patch(
+        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+    )
+    def test_initialize_ortho_views_viewer_not_in_managers(
+        self, mock_init, visualization_widget
+    ):
+        """Test ortho views initialization when viewer is not already in _VIEWER_MANAGERS."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views.connect = MagicMock(
+            return_value=MagicMock()
+        )
+        mock_init.return_value = mock_manager
+
+        # Trigger checkbox
+        widget.show_ortho_views.setChecked(True)
+
+        # verify initialize_ortho_views was called
+        mock_init.assert_called_once_with(widget.viewer)
+
+        # verify manager was stored
+        assert widget.orth_view_manager is not None
+        assert widget.orth_views_connection is not None
+
+    def test_initialize_ortho_views_with_existing_manager(self, visualization_widget):
+        """Test ortho views when viewer is already in _VIEWER_MANAGERS."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_manager.show = MagicMock()
+        mock_manager.hide = MagicMock()
+
+        # Mock the _VIEWER_MANAGERS to already contain this viewer
+        with patch(
+            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            {widget.viewer: mock_manager},
+        ):
+            widget.show_ortho_views.setChecked(True)
+
+            # verify manager.show() was called
+            mock_manager.show.assert_called_once()
+
+    def test_ortho_views_hide_when_unchecked(self, visualization_widget):
+        """Test that ortho views are hidden and resized when checkbox is unchecked."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_manager.show = MagicMock()
+        mock_manager.hide = MagicMock()
+        mock_manager.set_splitter_sizes = MagicMock()
+
+        with patch(
+            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            {widget.viewer: mock_manager},
+        ):
+            # Check the box first
+            widget.show_ortho_views.setChecked(True)
+            mock_manager.show.assert_called_once()
+
+            # Uncheck the box
+            widget.show_ortho_views.setChecked(False)
+
+            # Verify hide and set_splitter_sizes were called
+            mock_manager.hide.assert_called_once()
+            mock_manager.set_splitter_sizes.assert_called_once_with(0.0, 0.0)
+
+    @patch(
+        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+    )
+    def test_ortho_views_signal_connection(self, mock_init, visualization_widget):
+        """Test that the ortho view manager's signal is connected to the widget."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_signal = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views = mock_signal
+        mock_manager.main_controls_widget.destroyed = MagicMock()
+        mock_signal.connect = MagicMock(return_value=MagicMock())
+
+        mock_init.return_value = mock_manager
+
+        widget.show_ortho_views.setChecked(True)
+
+        # Verify signal was connected to initialize_ortho_views
+        mock_signal.connect.assert_called_once()
+        call_args = mock_signal.connect.call_args[0]
+        assert call_args[0] == widget.initialize_ortho_views
+
+    @patch(
+        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+    )
+    def test_on_ortho_cleanup(self, mock_init, visualization_widget):
+        """Test cleanup when ortho view manager is destroyed."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views = MagicMock()
+        mock_manager.main_controls_widget.destroyed = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views.connect = MagicMock(
+            return_value=MagicMock()
+        )
+
+        mock_init.return_value = mock_manager
+
+        widget.show_ortho_views.setChecked(True)
+
+        # Simulate widget destruction
+        widget._on_ortho_cleanup()
+
+        # Verify checkbox is unchecked and disconnected
+        assert not widget.show_ortho_views.isChecked()
+        assert widget.orth_view_manager is None
+        assert widget.orth_views_connection is None
+
+    @patch(
+        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+    )
+    def test_disconnect_ortho_views_with_valid_connection(
+        self, mock_init, visualization_widget
+    ):
+        """Test _disconnect_ortho_views with valid connection."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_signal = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views = mock_signal
+        mock_manager.main_controls_widget.destroyed = MagicMock()
+        mock_signal.connect = MagicMock(return_value=MagicMock())
+        mock_signal.disconnect = MagicMock()
+
+        mock_init.return_value = mock_manager
+
+        widget.show_ortho_views.setChecked(True)
+
+        # Disconnect
+        widget._disconnect_ortho_views()
+
+        # Verify disconnect was called and connection is cleared
+        mock_signal.disconnect.assert_called_once()
+        assert widget.orth_views_connection is None
+        assert widget.orth_view_manager is None
+
+        # No-op, should not raise
+        widget._disconnect_ortho_views()
+
+        assert widget.orth_views_connection is None
+        assert widget.orth_view_manager is None
+
+    def test_initialize_ortho_views_syncs_checkbox_state(self, visualization_widget):
+        """Test that initialize_ortho_views syncs checkbox state."""
+        widget, _ = visualization_widget
+
+        mock_manager = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views = MagicMock()
+        mock_manager.main_controls_widget.destroyed = MagicMock()
+        mock_manager.main_controls_widget.show_orth_views.connect = MagicMock(
+            return_value=MagicMock()
+        )
+
+        with patch(
+            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            {widget.viewer: mock_manager},
+        ):
+            # Manually call with checked=False (simulating external unchecking)
+            widget.initialize_ortho_views(False)
+
+            # Verify checkbox state is synced
+            assert not widget.show_ortho_views.isChecked()
+
+
+@pytest.fixture
+def visualization_widget_2d(viewer, solution_tracks_2d, segmentation_2d, qtbot):
+    """A VisualizationWidget on 2D+time tracks with a matching raw image layer, so
+    that the kymograph view is available."""
+    viewer.add_image(np.asarray(segmentation_2d, dtype=float), name="raw")
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+    tracks_viewer.set_kymograph_image_layer("raw")
+
+    widget = VisualizationWidget(viewer)
+    qtbot.addWidget(widget)
+
+    return widget, tracks_viewer
+
+
+class TestKymographControls:
+    """Tests for the view mode radio buttons and the kymograph controls."""
+
+    def test_kymograph_button_disabled_for_3d_tracks(self, visualization_widget):
+        """The kymograph view only supports 2D+time tracks."""
+        widget, _ = visualization_widget
+
+        assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is False
+        assert widget.kymograph_box.isEnabled() is False
+
+    def test_view_mode_switches_to_kymograph_and_disables_image_selector(
+        self, visualization_widget_2d
+    ):
+        widget, tracks_viewer = visualization_widget_2d
+
+        assert widget.view_mode_widget.button_for_mode("kymograph").isEnabled() is True
+        assert widget.image_layer_box.currentText() == "raw"
+
+        widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+
+        assert tracks_viewer.view_mode == "kymograph"
+        # the image can only be changed from the spatial view
+        assert widget.image_layer_box.isEnabled() is False
+        assert widget.image_layer_box.currentText() == "raw"
+
+        widget.view_mode_widget.button_for_mode("spatial").setChecked(True)
+
+        assert tracks_viewer.view_mode == "spatial"
+        assert widget.image_layer_box.isEnabled() is True
+
+    def test_visualization_widget_is_not_height_capped(self, visualization_widget_2d):
+        """The kymograph controls need room: the widget must not clip its contents."""
+        widget, _ = visualization_widget_2d
+
+        assert widget.maximumHeight() >= widget.sizeHint().height()
+
+    def test_page_controls_follow_the_kymograph_layers(self, visualization_widget_2d):
+        widget, tracks_viewer = visualization_widget_2d
+        widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+
+        widget.page_length_box.setValue(2)
+        assert tracks_viewer.kymograph_layers.page_length == 2
+        assert widget.page_start_box.maximum() == 3  # 5 frames, 2 per page
+
+        widget.next_page_button.click()
+        assert tracks_viewer.kymograph_layers.page_start == 2
+        assert widget.page_start_box.value() == 2
+
+        widget.prev_page_button.click()
+        assert tracks_viewer.kymograph_layers.page_start == 0
+        assert widget.page_start_box.value() == 0
+
+    def test_kymograph_link_visibility_checkboxes_toggle_layers(
+        self, visualization_widget_2d
+    ):
+        widget, tracks_viewer = visualization_widget_2d
+
+        widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+
+        kymograph_layers = tracks_viewer.kymograph_layers
+        assert kymograph_layers.continuation_links_layer is not None
+        assert kymograph_layers.branch_links_layer is not None
+        assert widget.paths_checkbox.isChecked() is True
+        assert widget.branches_checkbox.isChecked() is True
+
+        widget.paths_checkbox.setChecked(False)
+        widget.branches_checkbox.setChecked(False)
+
+        assert kymograph_layers.show_paths is False
+        assert kymograph_layers.show_branches is False
+        assert kymograph_layers.continuation_links_layer.visible is False
+        assert kymograph_layers.branch_links_layer.visible is False
+
+        widget.paths_checkbox.setChecked(True)
+        widget.branches_checkbox.setChecked(True)
+
+        assert kymograph_layers.continuation_links_layer.visible is True
+        assert kymograph_layers.branch_links_layer.visible is True

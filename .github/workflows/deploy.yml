@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     if: contains(github.ref, 'tags')
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Build a binary wheel and a source tarball
@@ -26,8 +26,8 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: ${{ contains(github.ref_name, '-dev') }}
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-a') || contains(github.ref_name, '-b') }}
           generate_release_notes: true

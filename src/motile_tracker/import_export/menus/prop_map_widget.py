@@ -1,13 +1,14 @@
 import difflib
-import inspect
 
 import pandas as pd
 import zarr
+from funtracks.annotators._regionprops_annotator import DEFAULT_POS_KEY
 from funtracks.annotators._track_annotator import (
     DEFAULT_LINEAGE_KEY,
     DEFAULT_TRACKLET_KEY,
 )
-from funtracks.features import _regionprops_features
+from funtracks.import_export import has_embedded_segmentation
+from funtracks.import_export._utils import get_default_key_to_feature_mapping
 from psygnal import Signal
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -24,6 +25,7 @@ from qtpy.QtWidgets import (
 
 from motile_tracker.import_export.menus.geff_import_utils import (
     clear_layout,
+    geff_group_path,
 )
 
 
@@ -79,6 +81,7 @@ class StandardFieldMapWidget(QWidget):
         super().__init__()
 
         self.seg = False
+        self.seg_for_features = False
         self.incl_z = True
         self.has_duplicates = False
         self.node_attrs: list[str] = []
@@ -128,6 +131,7 @@ class StandardFieldMapWidget(QWidget):
         """Update the mapping widget with the provided root group and segmentation flag."""
 
         self.seg = seg
+        self.seg_for_features = seg
         self.incl_z = incl_z
 
         self.df = df
@@ -156,16 +160,26 @@ class StandardFieldMapWidget(QWidget):
         self.update_mapping(seg)
 
     def extract_geff_property_fields(
-        self, root: zarr.Group, seg: bool, incl_z: bool
+        self,
+        root: zarr.Group,
+        seg: bool,
+        incl_z: bool,
+        seg_for_features: bool | None = None,
     ) -> None:
         """Update the mapping widget with the provided root group and segmentation flag."""
 
         self.seg = seg
+        self.seg_for_features = seg if seg_for_features is None else seg_for_features
         self.incl_z = incl_z
 
         self.setVisible(False)
         self.node_attrs = list(root["nodes"]["props"].group_keys())
         self.metadata = dict(root.attrs.get("geff", {}))
+
+        # Exclude mask/bbox from optional features when they are embedded segmentation
+        # attributes that will be imported automatically (shape metadata present).
+        if has_embedded_segmentation(geff_group_path(root)):
+            self.node_attrs = [a for a in self.node_attrs if a not in ("mask", "bbox")]
 
         # Retrieve attribute types from the zarr group
         self.attr_types = {
@@ -195,20 +209,35 @@ class StandardFieldMapWidget(QWidget):
         self.setVisible(True)
 
     def _update_props_left(self) -> None:
-        """Update the list of columns that have not been mapped yet"""
+        """Update the list of columns that have not been mapped yet
 
+        Remove attributes from optional features if they are mapped in the mandatory
+        mapping.
+        """
+
+        # Get all mapped values from the mandatory mapping
+        mapped_mandatory = {
+            combo.currentText()
+            for combo in self.mapping_widgets.values()
+            if combo.currentText() != "None"
+        }
+
+        # Remove from optional features if mapped in mandatory mapping
         self.props_left = [
-            attr for attr in self.node_attrs if attr not in self.get_name_map().values()
+            attr for attr in self.node_attrs if attr not in mapped_mandatory
         ]
 
         optional_features = list(self.optional_features.keys())
         for attribute in optional_features:
-            if attribute not in self.props_left:
+            if attribute not in self.props_left and attribute in mapped_mandatory:
                 self._remove_optional_prop(attribute)
 
         for attribute in self.props_left:
             if attribute not in self.optional_features:
                 self._add_optional_prop(attribute)
+
+        # update duplicate check
+        self._check_for_duplicates()
 
     def _get_initial_mapping(self) -> dict[str, str]:
         """Make an initial guess for mapping of geff columns to fields"""
@@ -237,6 +266,12 @@ class StandardFieldMapWidget(QWidget):
         # assign closest remaining column as best guess for remaining standard fields
         for attribute in self.standard_fields:
             if attribute in mapping:
+                continue
+            # seg_id is semantically specific: only match exactly to avoid stealing
+            # track_id or other columns via fuzzy matching (e.g. 'seg_id' ~ 'track_id'
+            # scores above the 0.4 cutoff and can prevent tracklet_id from being mapped).
+            if attribute == "seg_id":
+                mapping[attribute] = "None"
                 continue
             if len(self.props_left) > 0:
                 lower_map = {p.lower(): p for p in self.props_left}
@@ -267,7 +302,10 @@ class StandardFieldMapWidget(QWidget):
             attribute (str): The attribute name to add as an optional feature
         """
 
-        row_idx = len(self.optional_features) + 1  # +1 for header row
+        # Use the QGridLayout row count to assign a new row. Indices will keep counting up
+        # as widgets are removed and added back, but this does not leave holes, and
+        # ensures that two widgets will never collide together on the same row
+        row_idx = self.optional_mapping_layout.rowCount()
 
         # Prop checkbox
         attr_checkbox = QCheckBox(attribute)
@@ -281,13 +319,12 @@ class StandardFieldMapWidget(QWidget):
                 "int",
                 "float",
             }
-            and self.seg
+            and self.seg_for_features
         ):
             feature_option.addItems(self.feature_options)
         elif self.attr_types.get(attribute) in {"bool", "object", "0"}:
             # Boolean or unknown/object types => grouping option
             feature_option.addItem("Group")
-
         # Always have "Custom" as last option
         feature_option.addItem("Custom")
         feature_option.currentIndexChanged.connect(self._check_for_duplicates)
@@ -300,8 +337,10 @@ class StandardFieldMapWidget(QWidget):
         def make_on_change(checkbox, combo):
             def on_change(index):
                 selected_feature = combo.currentText()
-                # Enable recompute only if the selected feature corresponds to a regionprops feature
-                if selected_feature in self.feature_options:
+                # Recompute requires an external segmentation path (self.seg=True).
+                # Embedded segmentation (seg_for_features=True, seg=False) does not
+                # register a RegionPropsAnnotator, so recompute is not supported.
+                if selected_feature in self.feature_options and self.seg:
                     checkbox.setEnabled(True)
                 else:
                     checkbox.setEnabled(False)
@@ -342,7 +381,6 @@ class StandardFieldMapWidget(QWidget):
         self.optional_features[attribute]["recompute"].deleteLater()
 
         del self.optional_features[attribute]
-        self.row_idx = len(self.optional_features)
 
     def _check_for_duplicates(self) -> None:
         """Check if any regionprops property is assigned twice in optional_features
@@ -393,7 +431,9 @@ class StandardFieldMapWidget(QWidget):
             "x": "The world x-coordinate of the node.",
             "seg_id": (
                 "The integer label value in the segmentation file. Choose None "
-                "if the label values are identical to the node IDs."
+                "if the label values are identical to the node IDs. "
+                "If the segmentation was exported with 'relabel to track_id', "
+                "set this to the track_id column."
             ),
             DEFAULT_TRACKLET_KEY: (
                 "(Optional) The tracklet id this node belongs to, defined as a "
@@ -408,9 +448,10 @@ class StandardFieldMapWidget(QWidget):
         return self._wrap_tooltip(tooltips.get(attribute, ""))
 
     def update_mapping(self, seg: bool = False) -> None:
-        """Map graph spatiotemporal data and optionally the track and lineage attributes
-        Arg:
-            seg (bool = False): whether a segmentation is associated with this data
+        """Map graph spatiotemporal data and optionally the track and lineage attributes.
+
+        Args:
+            seg (bool): whether a segmentation is associated with this data
         """
 
         self.setVisible(False)
@@ -432,18 +473,21 @@ class StandardFieldMapWidget(QWidget):
                 combo.setVisible(False)
                 label.setVisible(False)
 
-        # Optional extra features
+        # Optional extra features: build display_name -> default_key mapping
+        ndim = 4 if "z" in self.standard_fields else 3
+        available = get_default_key_to_feature_mapping(ndim=ndim, display_name=False)
+        standard_keys = set(self.standard_fields) | {DEFAULT_POS_KEY}
+        # Lowercase for case-insensitive collision detection, since downstream
+        # code (e.g. tracks_from_df) lowercases feature keys before use.
+        self.reserved_keys = {k.lower() for k in available.keys() | standard_keys}
         self.feature_options = []
-        for name, func in inspect.getmembers(_regionprops_features, inspect.isfunction):
-            if func.__module__ == "funtracks.features._regionprops_features":
-                sig = inspect.signature(func)
-                if "ndim" in sig.parameters:
-                    ndim = 4 if "z" in self.standard_fields else 3
-                    feature = func(ndim)  # call with ndim
-                else:
-                    feature = func()  # Call without ndim
-                display_name = feature.get("display_name", name)
-                self.feature_options.append(display_name)
+        self.display_name_to_default_key: dict[str, str] = {}
+        for default_key, feature in available.items():
+            if feature["feature_type"] != "node" or default_key in standard_keys:
+                continue
+            display_name = feature.get("display_name", default_key)
+            self.feature_options.append(display_name)
+            self.display_name_to_default_key[display_name] = default_key
 
         # Clear existing optional layout and widgets
         clear_layout(self.optional_mapping_layout)
@@ -467,64 +511,41 @@ class StandardFieldMapWidget(QWidget):
     def get_name_map(self) -> dict[str, str]:
         """Return a mapping from standard field name to source property name.
 
-        Includes both standard fields (time, x, y, etc.) and any Custom/Group
-        features selected in optional features.
+        Includes standard fields (time, x, y, etc.), Custom/Group features,
+        and non-recompute regionprops features selected in optional features.
         """
         name_map = {
             attribute: combo.currentText()
             for attribute, combo in self.mapping_widgets.items()
         }
 
-        # Add Custom and Group features to name_map
         for attr, widgets in self.optional_features.items():
-            if widgets["attr_checkbox"].isChecked():
-                selected = widgets["feature_option"].currentText()
-                if selected in ("Custom", "Group"):
-                    # Map property name to itself (identity mapping)
-                    name_map[attr] = attr
+            if not widgets["attr_checkbox"].isChecked():
+                continue
+            selected = widgets["feature_option"].currentText()
+            if selected in ("Custom", "Group"):
+                key = f"custom_{attr}" if attr.lower() in self.reserved_keys else attr
+                name_map[key] = attr
+            elif not widgets["recompute"].isChecked():
+                # Regionprops feature loaded from data (not recomputed)
+                default_key = self.display_name_to_default_key[selected]
+                name_map[default_key] = attr
 
         return name_map
 
-    def get_features(self) -> dict[str, str]:
-        """Get features dict for tracks_from_df (CSV import).
+    def get_recompute_keys(self) -> list[str]:
+        """Get feature keys that should be recomputed from segmentation.
 
-        Returns dict mapping feature display name to either:
-        - Column name (to load from that column)
-        - "Recompute" (to compute from segmentation)
-
-        Custom and Group features are excluded (handled via name_map).
+        Returns a list of default feature keys for which the user checked
+        the 'Recompute' checkbox.
         """
-        features = {}
-        for attr, widgets in self.optional_features.items():
+        recompute_keys = []
+        for _attr, widgets in self.optional_features.items():
             if widgets["attr_checkbox"].isChecked():
                 selected = widgets["feature_option"].currentText()
-                recompute = widgets["recompute"].isChecked()
-
                 if selected in ("Custom", "Group"):
-                    # Custom/Group features are added to name_map instead
                     continue
-                elif recompute:
-                    features[selected] = "Recompute"
-                else:
-                    features[selected] = attr  # column name
-        return features
-
-    def get_node_features(self) -> dict[str, bool]:
-        """Get node_features dict for import_from_geff (GEFF import).
-
-        Returns dict mapping property name to recompute boolean.
-
-        Custom and Group features are excluded (handled via name_map).
-        """
-        node_features = {}
-        for attr, widgets in self.optional_features.items():
-            if widgets["attr_checkbox"].isChecked():
-                selected = widgets["feature_option"].currentText()
-                recompute = widgets["recompute"].isChecked()
-
-                if selected in ("Custom", "Group"):
-                    # Custom/Group features are added to name_map instead
-                    continue
-
-                node_features[attr] = recompute
-        return node_features
+                if widgets["recompute"].isChecked():
+                    default_key = self.display_name_to_default_key[selected]
+                    recompute_keys.append(default_key)
+        return recompute_keys

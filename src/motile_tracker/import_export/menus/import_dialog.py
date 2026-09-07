@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from funtracks.import_export import import_from_geff, tracks_from_df
+import numpy as np
+from funtracks.import_export import (
+    has_embedded_segmentation,
+    import_from_geff,
+    tracks_from_df,
+)
 from funtracks.import_export.magic_imread import magic_imread
 from geff_spec.utils import axes_from_lists
 from qtpy.QtCore import Qt
@@ -22,6 +27,7 @@ from motile_tracker.import_export.menus.csv_dimension_widget import (
 from motile_tracker.import_export.menus.csv_import_widget import (
     ImportCSVWidget,
 )
+from motile_tracker.import_export.menus.geff_import_utils import geff_group_path
 from motile_tracker.import_export.menus.geff_import_widget import (
     ImportGeffWidget,
 )
@@ -49,8 +55,9 @@ class ImportDialog(QDialog):
         self.seg = None
         self.df = None
         self.incl_z = False
-        self.setWindowTitle(f"Import external tracks from {import_type}")
-        self.name = f"Tracks from {import_type}"
+        self.source_path: Path | None = None
+        self.setWindowTitle(f"Import external tracks from {import_type.upper()}")
+        self.name = f"Tracks from {import_type.upper()}"
 
         # cancel and finish buttons
         self.button_layout = QHBoxLayout()
@@ -146,7 +153,13 @@ class ImportDialog(QDialog):
                     )
 
                 self.prop_map_widget.extract_geff_property_fields(
-                    self.import_widget.root, self.seg, self.incl_z
+                    self.import_widget.root,
+                    self.seg,
+                    self.incl_z,
+                    seg_for_features=self.seg
+                    or has_embedded_segmentation(
+                        geff_group_path(self.import_widget.root)
+                    ),
                 )
 
             else:
@@ -314,6 +327,72 @@ class ImportDialog(QDialog):
         geff_metadata["axes"] = [ax.model_dump(exclude_none=True) for ax in axes]
         self.import_widget.root.attrs["geff"] = geff_metadata
 
+    def _ensure_area_enabled(self) -> None:
+        """Enable the area feature when segmentation is present.
+
+        Recomputes only when area is missing from the graph schema (e.g. a GEFF
+        imported without an area attribute); otherwise reuses existing values.
+        """
+        if self.tracks.segmentation is not None and "area" not in self.tracks.features:
+            recompute = "area" not in self.tracks.graph.node_attr_keys()
+            self.tracks.enable_features(["area"], recompute=recompute)
+
+    def _maybe_convert_legacy_masks(self, geff_dir: Path) -> bool:
+        """Offer to convert masks stored in an older, memory-heavy dtype.
+
+        Geff files written by older versions of tracksdata store segmentation
+        masks as integers (e.g. ``uint64``) rather than ``bool``, using ~8x more
+        memory when read, which can run out of memory on large datasets. If such
+        masks are detected, warn the user and offer a lossless, in-place
+        conversion of the mask buffer (the rest of the geff is untouched).
+
+        Returns:
+            bool: True to continue the import, False if the user cancelled or the
+            conversion failed.
+        """
+        # TODO: the geff dtype helpers are only on tracksdata main
+        # (royerlab/tracksdata#319). Once released, add a tracksdata floor to
+        # pyproject.toml and import these at module level.
+        try:
+            from tracksdata.constants import DEFAULT_ATTR_KEYS
+            from tracksdata.io import convert_geff_prop_dtype, geff_prop_dtype
+        except ImportError:
+            return True  # older tracksdata without the utility; import as before
+
+        mask_key = DEFAULT_ATTR_KEYS.MASK
+        try:
+            dtype = geff_prop_dtype(geff_dir, mask_key)
+        except Exception:  # noqa: BLE001
+            return True  # detection failed; don't block the import
+
+        if dtype is None or dtype == np.bool_:
+            return True
+
+        answer = QMessageBox.question(
+            self,
+            "Old mask format detected",
+            f"This geff stores segmentation masks as '{dtype}', an older format that "
+            "uses about 8x more memory when loaded.\n\n"
+            "Convert them to boolean now? The conversion is lossless, but it edits "
+            f"{geff_dir.name} in place.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        if answer == QMessageBox.No:
+            return True  # load as-is
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            convert_geff_prop_dtype(geff_dir, mask_key, np.bool_)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Error", f"Failed to convert masks: {e}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        return True
+
     def _finish(self) -> None:
         """Tries to read the csv/geff file and optional segmentation image and apply the
         attribute to column mapping to construct a Tracks object"""
@@ -324,6 +403,9 @@ class ImportDialog(QDialog):
                 group_path = Path(self.import_widget.root.path)  # e.g. 'tracks'
                 geff_dir = store_path / group_path
 
+                if not self._maybe_convert_legacy_masks(geff_dir):
+                    return
+
                 self.name = self.import_widget.dir_name
                 scale = self.scale_widget.get_scale() if self.seg else None
 
@@ -331,7 +413,15 @@ class ImportDialog(QDialog):
                 name_map = self.prop_map_widget.get_name_map()
                 # Remove entries with "None" value - funtracks doesn't accept None mappings
                 name_map = {k: v for k, v in name_map.items() if v != "None"}
-                node_features = self.prop_map_widget.get_node_features()
+                recompute_keys = self.prop_map_widget.get_recompute_keys()
+
+                # When embedded segmentation is present (mask + bbox in graph) and no
+                # external segmentation file is provided, ensure those attributes are
+                # loaded so funtracks can reconstruct the segmentation as a
+                # GraphArrayView.
+                if segmentation_path is None and has_embedded_segmentation(geff_dir):
+                    name_map.setdefault("mask", "mask")
+                    name_map.setdefault("bbox", "bbox")
 
                 # Generate axes metadata if missing (required for funtracks validation)
                 geff_metadata = dict(self.import_widget.root.attrs.get("geff", {}))
@@ -346,12 +436,19 @@ class ImportDialog(QDialog):
                         geff_dir,
                         name_map,
                         segmentation_path=segmentation_path,
-                        node_features=node_features,
                         scale=scale,
                     )
-                except (ValueError, OSError, FileNotFoundError, AssertionError) as e:
+                    if recompute_keys:
+                        self.tracks.enable_features(recompute_keys, recompute=True)
+                    self._ensure_area_enabled()
+                except Exception as e:  # noqa: BLE001
                     QMessageBox.critical(self, "Error", f"Failed to load tracks: {e}")
                     return
+                # Report the geff group we actually read, not the container it
+                # was found in: a listener uses this path to find data saved
+                # alongside the tracks, and the container may hold several
+                # groups.
+                self.source_path = geff_dir
                 self.accept()
         else:
             if self.df is not None:
@@ -365,17 +462,21 @@ class ImportDialog(QDialog):
                 node_name_map = self.prop_map_widget.get_name_map()
                 # Remove entries with "None" value - funtracks doesn't accept None mappings
                 node_name_map = {k: v for k, v in node_name_map.items() if v != "None"}
-                features = self.prop_map_widget.get_features()
+                recompute_keys = self.prop_map_widget.get_recompute_keys()
 
                 try:
                     self.tracks = tracks_from_df(
                         self.df,
                         segmentation=segmentation,
                         scale=scale,
-                        features=features,
                         node_name_map=node_name_map,
                     )
-                except (ValueError, OSError, FileNotFoundError, AssertionError) as e:
+                    if recompute_keys:
+                        self.tracks.enable_features(recompute_keys, recompute=True)
+                    self._ensure_area_enabled()
+                except Exception as e:  # noqa: BLE001
                     QMessageBox.critical(self, "Error", f"Failed to load tracks: {e}")
                     return
+                csv_text = self.import_widget.csv_path_line.text().strip()
+                self.source_path = Path(csv_text) if csv_text else None
                 self.accept()

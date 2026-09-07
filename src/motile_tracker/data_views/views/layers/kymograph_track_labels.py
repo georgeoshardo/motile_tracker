@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 
 class KymographTrackLabels(TrackLabels):
+    """Labels layer showing the segmentation of one kymograph page: all frames of the
+    page are placed side by side along x. Painting edits the underlying Tracks object
+    frame by frame; a single stroke may not cross a frame boundary.
+    """
+
     def __init__(
         self,
         *,
@@ -51,10 +56,21 @@ class KymographTrackLabels(TrackLabels):
         self.blending = "translucent_no_depth"
         self._refresh()
 
-    def process_click(self, event, label: int, layer=None):
-        if label is not None and label != 0:
+    def process_click(
+        self,
+        event,
+        value: int | None = None,
+        side_button: int | None = None,
+        layer=None,
+    ):
+        """Select the clicked node without re-centering the view (the kymograph page
+        already shows the node)."""
+        if side_button is not None:
+            super().process_click(event, side_button=side_button)
+            return
+        if value is not None and value != 0:
             with self.tracks_viewer.selection_updates(set_view=False):
-                super().process_click(event, label, layer)
+                super().process_click(event, value=value, layer=layer)
 
     def update_page(
         self,
@@ -70,8 +86,9 @@ class KymographTrackLabels(TrackLabels):
         self._refresh()
 
     def _next_unused_label(self) -> int:
-        segmentation = np.asarray(self.tracks_viewer.tracks.segmentation)
-        return int(segmentation.max()) + 1
+        """Node ids double as segmentation labels, so the next free label is one more
+        than the largest node id."""
+        return max(self.tracks_viewer.tracks.graph.node_ids(), default=0) + 1
 
     def _set_new_label(self, *, new_track_id: bool) -> None:
         if new_track_id or self.tracks_viewer.selected_track is None:
@@ -88,9 +105,9 @@ class KymographTrackLabels(TrackLabels):
         self._set_new_label(new_track_id=True)
 
     def _refresh(self):
-        segmentation = np.asarray(self.tracks_viewer.tracks.segmentation)
+        # only the frames of the current page are read from the (lazy) segmentation
         self.data = concat_time_to_kymograph(
-            segmentation,
+            self.tracks_viewer.tracks.segmentation,
             page_start=self.page_start,
             page_length=self.page_length,
         )
@@ -103,12 +120,16 @@ class KymographTrackLabels(TrackLabels):
 
         if tracks is not None:
             if tracks.graph.has_node(self.selected_label):
-                self.tracks_viewer.selected_track = tracks.get_track_id(self.selected_label)
+                self.tracks_viewer.selected_track = int(
+                    tracks.get_track_id(self.selected_label)
+                )
                 existing_time = tracks.get_time(self.selected_label)
                 if existing_time != current_timepoint:
                     edit = False
                     if self.tracks_viewer.selected_track in tracks.track_id_to_node:
-                        for node in tracks.track_id_to_node[self.tracks_viewer.selected_track]:
+                        for node in tracks.track_id_to_node[
+                            self.tracks_viewer.selected_track
+                        ]:
                             if tracks.get_time(node) == current_timepoint:
                                 self.selected_label = int(node)
                                 edit = True
@@ -117,7 +138,9 @@ class KymographTrackLabels(TrackLabels):
                         self._set_new_label(new_track_id=False)
             else:
                 if self.tracks_viewer.selected_track in tracks.track_id_to_node:
-                    for node in tracks.track_id_to_node[self.tracks_viewer.selected_track]:
+                    for node in tracks.track_id_to_node[
+                        self.tracks_viewer.selected_track
+                    ]:
                         if tracks.get_time(node) == current_timepoint:
                             self.selected_label = int(node)
                             break
@@ -177,7 +200,7 @@ class KymographTrackLabels(TrackLabels):
         pixels_by_time = self._parse_paint_event_by_time(event.value)
         if len(pixels_by_time) > 1:
             show_info("Kymograph painting cannot cross frame boundaries in one stroke.")
-            super().undo()
+            self._revert_paint(None)  # revert the stroke on the layer
             self._refresh()
             return
 
@@ -189,7 +212,8 @@ class KymographTrackLabels(TrackLabels):
         with self.events.selected_label.blocker():
             try:
                 for timepoint, updated_pixels in pixels_by_time.items():
-                    self._ensure_valid_label_for_time(timepoint) if target_value != 0 else None
+                    if target_value != 0:
+                        self._ensure_valid_label_for_time(timepoint)
                     UserUpdateSegmentation(
                         tracks=self.tracks_viewer.tracks,
                         new_value=(self.selected_label if target_value != 0 else 0),
@@ -201,22 +225,25 @@ class KymographTrackLabels(TrackLabels):
                 if e.forceable:
                     force, always_force = confirm_force_operation(message=str(e))
                     self.tracks_viewer.force = always_force
-                    super().undo()
+                    self._revert_paint(None)  # revert the stroke on the layer
                     if not force:
                         self._refresh()
                     else:
                         for timepoint, updated_pixels in pixels_by_time.items():
-                            self._ensure_valid_label_for_time(timepoint) if target_value != 0 else None
+                            if target_value != 0:
+                                self._ensure_valid_label_for_time(timepoint)
                             UserUpdateSegmentation(
                                 tracks=self.tracks_viewer.tracks,
-                                new_value=(self.selected_label if target_value != 0 else 0),
+                                new_value=(
+                                    self.selected_label if target_value != 0 else 0
+                                ),
                                 updated_pixels=updated_pixels,
                                 current_track_id=self.tracks_viewer.selected_track,
                                 force=True,
                             )
                 else:
                     warnings.warn(str(e), stacklevel=2)
-                    super().undo()
+                    self._revert_paint(None)  # revert the stroke on the layer
                     self._refresh()
 
     def _ensure_valid_label(self, event: Event | None = None):

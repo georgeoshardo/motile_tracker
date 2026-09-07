@@ -1,11 +1,70 @@
 """Tests for center_view functionality with different scale configurations."""
 
-import networkx as nx
+import napari
 import numpy as np
+import pytest
+import tracksdata as td
 from funtracks.data_model import SolutionTracks
+from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
+from tracksdata.nodes._mask import Mask
 
 from motile_tracker.data_views.views.ortho_views import initialize_ortho_views
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+
+
+def _make_single_node_graph(
+    tmp_path,
+    pos: list,
+    seg_bbox: list | None = None,
+    seg_shape: tuple | None = None,
+) -> td.graph.GraphView:
+    """Create a 3D+time tracksdata graph with a single node at the given position.
+
+    Args:
+        tmp_path: Pytest tmp_path for the SQLite database.
+        pos: Node position in world coordinates [z, y, x].
+        seg_bbox: Bounding box [z0, y0, x0, z1, y1, x1] for the node's mask.
+            If provided, mask/bbox node attributes and shape metadata
+            are added so SolutionTracks can reconstruct the segmentation.
+        seg_shape: Full segmentation array shape (t, z, y, x). Required when
+            seg_bbox is provided.
+    """
+    node_attributes = ["pos", "area"]
+    if seg_bbox is not None:
+        node_attributes += [td.DEFAULT_ATTR_KEYS.MASK, td.DEFAULT_ATTR_KEYS.BBOX]
+
+    graph = create_empty_graphview_graph(
+        node_attributes=node_attributes,
+        ndim=4,
+        database=str(tmp_path / "graph.db"),
+    )
+
+    node: dict = {"t": 0, "pos": list(pos), "area": 1000.0, "solution": True}
+    if seg_bbox is not None:
+        bbox = np.array(seg_bbox, dtype=np.int64)
+        mask_shape = tuple(int(bbox[i + 3] - bbox[i]) for i in range(3))
+        node[td.DEFAULT_ATTR_KEYS.MASK] = Mask(
+            np.ones(mask_shape, dtype=bool), bbox=bbox
+        )
+        node[td.DEFAULT_ATTR_KEYS.BBOX] = bbox
+
+    graph.bulk_add_nodes(nodes=[node], indices=[1])
+
+    if seg_shape is not None:
+        graph._update_metadata(shape=seg_shape)
+
+    return graph
+
+
+@pytest.fixture
+def viewer(make_napari_viewer):
+    """Per-test viewer for center_view tests.
+
+    These tests check viewer.dims.point and _indices_view, which depend on
+    viewer.dims.current_step. Napari does not reset current_step when layers
+    are cleared, so a fresh viewer per test is required for isolation.
+    """
+    return make_napari_viewer()
 
 
 class TestCenterViewWithScale:
@@ -18,42 +77,25 @@ class TestCenterViewWithScale:
     - center_view should position the viewer at the node's world coordinates
     """
 
-    def test_center_view_with_z_scale_less_than_one(self, make_napari_viewer):
+    def test_center_view_with_z_scale_less_than_one(self, viewer, tmp_path):
         """Test center_view when z-scale < 1 (common for anisotropic z).
 
         With z-scale = 0.5:
-        - Segmentation pixel z=50 corresponds to world z=25
-        - Node at world z=25 should display correctly
+        - Segmentation pixel z=10 corresponds to world z=5
+        - Node at world z=5 should display correctly
         """
-        viewer = make_napari_viewer()
 
         # Create graph - positions are in WORLD coordinates
-        graph = nx.DiGraph()
-        # Node at world position [25, 50, 50]
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [25, 50, 50],  # world coords
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
-
-        # Create segmentation (100 pixels in z)
-        # With z-scale=0.5, world z-extent is 0-50
-        segmentation = np.zeros((2, 100, 100, 100), dtype="int32")
-        segmentation[0, 45:55, 45:55, 45:55] = 1  # pixel z=50, world z=25
+        # Node at world position [5, 10, 10]; pixel z=10 (box [9:11,9:11,9:11])
+        graph = _make_single_node_graph(
+            tmp_path,
+            pos=[5, 10, 10],
+            seg_bbox=[9, 9, 9, 11, 11, 11],
+            seg_shape=(2, 20, 20, 20),
+        )
 
         scale = [1.0, 0.5, 1.0, 1.0]  # t, z, y, x
-        tracks = SolutionTracks(
-            graph=graph,
-            segmentation=segmentation,
-            scale=scale,
-            ndim=4,
-        )
+        tracks = SolutionTracks(graph=graph, scale=scale, ndim=4, time_attr="t")
 
         tracks_viewer = TracksViewer.get_instance(viewer)
         tracks_viewer.update_tracks(tracks=tracks, name="test")
@@ -65,9 +107,9 @@ class TestCenterViewWithScale:
         # Center on node 1 at world position [25, 50, 50]
         tracks_viewer.tracking_layers.center_view(node=1)
 
-        # Verify viewer is positioned at world z=25
+        # Verify viewer is positioned at world z=5
         new_point = viewer.dims.point
-        assert abs(new_point[1] - 25) < 1, f"Expected world z≈25, got {new_point[1]}"
+        assert abs(new_point[1] - 5) < 1, f"Expected world z≈5, got {new_point[1]}"
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -76,39 +118,23 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_with_z_scale_greater_than_one(self, make_napari_viewer):
+    def test_center_view_with_z_scale_greater_than_one(self, viewer, tmp_path):
         """Test center_view when z-scale > 1.
 
         With z-scale = 2.0:
-        - Segmentation pixel z=25 corresponds to world z=50
+        - Segmentation pixel z=5 corresponds to world z=10
         """
-        viewer = make_napari_viewer()
 
-        graph = nx.DiGraph()
-        # Node at world position [50, 50, 50]
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [50, 50, 50],  # world coords
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
-
-        # Segmentation with 50 pixels in z, scale=2 -> world z-extent 0-100
-        segmentation = np.zeros((2, 50, 100, 100), dtype="int32")
-        segmentation[0, 20:30, 45:55, 45:55] = 1  # pixel z=25, world z=50
+        # Node at world position [10, 10, 10]; pixel z=5 (box [4:6,9:11,9:11])
+        graph = _make_single_node_graph(
+            tmp_path,
+            pos=[10, 10, 10],
+            seg_bbox=[4, 9, 9, 6, 11, 11],
+            seg_shape=(2, 20, 20, 20),
+        )
 
         scale = [1.0, 2.0, 1.0, 1.0]
-        tracks = SolutionTracks(
-            graph=graph,
-            segmentation=segmentation,
-            scale=scale,
-            ndim=4,
-        )
+        tracks = SolutionTracks(graph=graph, scale=scale, ndim=4, time_attr="t")
 
         tracks_viewer = TracksViewer.get_instance(viewer)
         tracks_viewer.update_tracks(tracks=tracks, name="test")
@@ -119,9 +145,9 @@ class TestCenterViewWithScale:
 
         tracks_viewer.tracking_layers.center_view(node=1)
 
-        # Verify viewer is positioned at world z=50
+        # Verify viewer is positioned at world z=10
         new_point = viewer.dims.point
-        assert abs(new_point[1] - 50) < 1, f"Expected world z≈50, got {new_point[1]}"
+        assert abs(new_point[1] - 10) < 1, f"Expected world z≈10, got {new_point[1]}"
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -130,42 +156,27 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_with_image_layer_different_scale(self, make_napari_viewer):
+    def test_center_view_with_image_layer_different_scale(self, viewer, tmp_path):
         """Test center_view when image layer has different scale than tracks seg layer.
 
-        Image layer: scale [1,1,1,1], 100 z-pixels -> world z 0-100
-        Seg layer: scale [1,0.5,1,1], 100 z-pixels -> world z 0-50
+        Image layer: scale [1,1,1,1], 20 z-pixels -> world z 0-20
+        Seg layer: scale [1,0.5,1,1], 20 z-pixels -> world z 0-10
         """
-        viewer = make_napari_viewer()
 
         # Add an image layer with no scale (1.0 for all dims)
-        image_data = np.random.rand(2, 100, 100, 100)
+        image_data = np.random.rand(2, 20, 20, 20)
         viewer.add_image(image_data, name="raw_image")
 
-        graph = nx.DiGraph()
-        # Node at world z=25
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [25, 50, 50],
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
-
-        segmentation = np.zeros((2, 100, 100, 100), dtype="int32")
-        segmentation[0, 45:55, 45:55, 45:55] = 1
+        # Node at world z=5 (box [9:11,9:11,9:11])
+        graph = _make_single_node_graph(
+            tmp_path,
+            pos=[5, 10, 10],
+            seg_bbox=[9, 9, 9, 11, 11, 11],
+            seg_shape=(2, 20, 20, 20),
+        )
 
         scale = [1.0, 0.5, 1.0, 1.0]
-        tracks = SolutionTracks(
-            graph=graph,
-            segmentation=segmentation,
-            scale=scale,
-            ndim=4,
-        )
+        tracks = SolutionTracks(graph=graph, scale=scale, ndim=4, time_attr="t")
 
         tracks_viewer = TracksViewer.get_instance(viewer)
         tracks_viewer.update_tracks(tracks=tracks, name="test")
@@ -176,9 +187,9 @@ class TestCenterViewWithScale:
 
         tracks_viewer.tracking_layers.center_view(node=1)
 
-        # Verify viewer is positioned at world z=25
+        # Verify viewer is positioned at world z=5
         new_point = viewer.dims.point
-        assert abs(new_point[1] - 25) < 1, f"Expected world z≈25, got {new_point[1]}"
+        assert abs(new_point[1] - 5) < 1, f"Expected world z≈5, got {new_point[1]}"
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -187,31 +198,17 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_no_scale(self, make_napari_viewer):
+    def test_center_view_no_scale(self, viewer, tmp_path):
         """Test center_view when no scale is set (defaults to 1.0)."""
-        viewer = make_napari_viewer()
 
-        graph = nx.DiGraph()
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [50, 50, 50],
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
-
-        segmentation = np.zeros((2, 100, 100, 100), dtype="int32")
-        segmentation[0, 45:55, 45:55, 45:55] = 1
-
-        tracks = SolutionTracks(
-            graph=graph,
-            segmentation=segmentation,
-            ndim=4,
+        graph = _make_single_node_graph(
+            tmp_path,
+            pos=[10, 10, 10],
+            seg_bbox=[9, 9, 9, 11, 11, 11],
+            seg_shape=(2, 20, 20, 20),
         )
+
+        tracks = SolutionTracks(graph=graph, ndim=4, time_attr="t")
 
         tracks_viewer = TracksViewer.get_instance(viewer)
         tracks_viewer.update_tracks(tracks=tracks, name="test")
@@ -225,9 +222,9 @@ class TestCenterViewWithScale:
         # With no scale, world coords = pixel coords
         new_point = viewer.dims.point
         assert new_point[0] == 0  # time
-        assert new_point[1] == 50  # z
-        assert new_point[2] == 50  # y
-        assert new_point[3] == 50  # x
+        assert new_point[1] == 10  # z
+        assert new_point[2] == 10  # y
+        assert new_point[3] == 10  # x
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -236,39 +233,23 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_no_segmentation_with_scaled_image(self, make_napari_viewer):
+    def test_center_view_no_segmentation_with_scaled_image(self, viewer, tmp_path):
         """Test center_view when there is no segmentation, only points and an image layer.
 
-        Image layer: scale [1, 0.5, 1, 1], 100 z-pixels -> world z 0-50
-        Points: in world coordinates at z=25
+        Image layer: scale [1, 0.5, 1, 1], 20 z-pixels -> world z 0-10
+        Points: in world coordinates at z=5
         No segmentation layer.
         """
-        viewer = make_napari_viewer()
 
         # Add image layer with z-scale=0.5
-        image_data = np.random.rand(2, 100, 100, 100)
+        image_data = np.random.rand(2, 20, 20, 20)
         viewer.add_image(image_data, name="raw_image", scale=[1.0, 0.5, 1.0, 1.0])
 
-        graph = nx.DiGraph()
-        # Node at world position [25, 50, 50]
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [25, 50, 50],  # world coords
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
+        # Node at world position [5, 10, 10] — no segmentation
+        graph = _make_single_node_graph(tmp_path, pos=[5, 10, 10])
 
-        # No segmentation
         tracks = SolutionTracks(
-            graph=graph,
-            segmentation=None,
-            scale=[1.0, 0.5, 1.0, 1.0],
-            ndim=4,
+            graph=graph, scale=[1.0, 0.5, 1.0, 1.0], ndim=4, time_attr="t"
         )
 
         tracks_viewer = TracksViewer.get_instance(viewer)
@@ -280,9 +261,9 @@ class TestCenterViewWithScale:
 
         tracks_viewer.tracking_layers.center_view(node=1)
 
-        # Verify viewer is positioned at world z=25
+        # Verify viewer is positioned at world z=5
         new_point = viewer.dims.point
-        assert abs(new_point[1] - 25) < 1, f"Expected world z≈25, got {new_point[1]}"
+        assert abs(new_point[1] - 5) < 1, f"Expected world z≈5, got {new_point[1]}"
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -291,42 +272,26 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_no_segmentation_mismatched_scales(self, make_napari_viewer):
+    def test_center_view_no_segmentation_mismatched_scales(self, viewer, tmp_path):
         """Test center_view with no segmentation and mismatched image/points scales.
 
-        Image layer: scale [1, 1, 1, 1], 100 z-pixels -> world z 0-100
-        Points: scale [1, 0.5, 1, 1], positions at world z=25
+        Image layer: scale [1, 1, 1, 1], 20 z-pixels -> world z 0-20
+        Points: scale [1, 0.5, 1, 1], positions at world z=5
         No segmentation layer.
 
         This tests the case where the image and points have different scales,
         which affects how dims.range is computed.
         """
-        viewer = make_napari_viewer()
 
         # Add image layer with no z-scale (1.0)
-        image_data = np.random.rand(2, 100, 100, 100)
+        image_data = np.random.rand(2, 20, 20, 20)
         viewer.add_image(image_data, name="raw_image")
 
-        graph = nx.DiGraph()
-        # Node at world position [25, 50, 50]
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [25, 50, 50],  # world coords
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
+        # Node at world position [5, 10, 10] — no segmentation
+        graph = _make_single_node_graph(tmp_path, pos=[5, 10, 10])
 
-        # No segmentation, but tracks have scale
         tracks = SolutionTracks(
-            graph=graph,
-            segmentation=None,
-            scale=[1.0, 0.5, 1.0, 1.0],
-            ndim=4,
+            graph=graph, scale=[1.0, 0.5, 1.0, 1.0], ndim=4, time_attr="t"
         )
 
         tracks_viewer = TracksViewer.get_instance(viewer)
@@ -338,9 +303,9 @@ class TestCenterViewWithScale:
 
         tracks_viewer.tracking_layers.center_view(node=1)
 
-        # Verify viewer is positioned at world z=25
+        # Verify viewer is positioned at world z=5
         new_point = viewer.dims.point
-        assert abs(new_point[1] - 25) < 1, f"Expected world z≈25, got {new_point[1]}"
+        assert abs(new_point[1] - 5) < 1, f"Expected world z≈5, got {new_point[1]}"
 
         # Verify point is visible using _indices_view
         visible_indices = points_layer._indices_view
@@ -349,41 +314,26 @@ class TestCenterViewWithScale:
             f"Viewer dims.point={viewer.dims.point}"
         )
 
-    def test_center_view_syncs_ortho_views(self, make_napari_viewer, qtbot):
+    def test_center_view_syncs_ortho_views(self, viewer, qtbot, tmp_path):
         """Test that center_view properly syncs ortho views so points are visible.
 
         When center_view is called, the ortho views should also update their
         dims.current_step so that the point is visible in all views.
         """
-        viewer = make_napari_viewer()
 
         # Initialize orthogonal views
         ortho_manager = initialize_ortho_views(viewer)
 
-        graph = nx.DiGraph()
-        # Node at world position [25, 50, 50]
-        nodes = [
-            (
-                1,
-                {
-                    "pos": [25, 50, 50],  # world coords
-                    "time": 0,
-                    "area": 1000,
-                },
-            ),
-        ]
-        graph.add_nodes_from(nodes)
-
-        segmentation = np.zeros((2, 100, 100, 100), dtype="int32")
-        segmentation[0, 45:55, 45:55, 45:55] = 1
+        # Node at world position [5, 10, 10] (box [9:11,9:11,9:11])
+        graph = _make_single_node_graph(
+            tmp_path,
+            pos=[5, 10, 10],
+            seg_bbox=[9, 9, 9, 11, 11, 11],
+            seg_shape=(2, 20, 20, 20),
+        )
 
         scale = [1.0, 0.5, 1.0, 1.0]  # z-scale = 0.5
-        tracks = SolutionTracks(
-            graph=graph,
-            segmentation=segmentation,
-            scale=scale,
-            ndim=4,
-        )
+        tracks = SolutionTracks(graph=graph, scale=scale, ndim=4, time_attr="t")
 
         # Show orthogonal views BEFORE adding tracks so they get the layers
         ortho_manager.show()
@@ -415,8 +365,16 @@ class TestCenterViewWithScale:
         # Get ortho view points layers and verify point is visible in each
         right_vm = ortho_manager.right_widget.vm_container.viewer_model
         bottom_vm = ortho_manager.bottom_widget.vm_container.viewer_model
-        right_points = right_vm.layers[-1]
-        bottom_points = bottom_vm.layers[-1]
+        right_points = next(
+            layer
+            for layer in right_vm.layers
+            if isinstance(layer, napari.layers.Points)
+        )
+        bottom_points = next(
+            layer
+            for layer in bottom_vm.layers
+            if isinstance(layer, napari.layers.Points)
+        )
 
         # The ortho views use copied Points layers (not TrackPoints), so we check
         # _indices_view on those as well

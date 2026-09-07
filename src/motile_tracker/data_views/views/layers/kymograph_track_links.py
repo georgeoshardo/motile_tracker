@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import napari
-import numpy as np
 from napari.layers import Shapes
 
 from motile_tracker.data_views.views.layers.click_utils import (

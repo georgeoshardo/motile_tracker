@@ -6,18 +6,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import tracksdata as td
 from funtracks.data_model import SolutionTracks
-from funtracks.import_export.internal_format import load_tracks, save_tracks
+from funtracks.import_export import import_from_geff, load_v1_tracks
+
+from motile_tracker.import_export.geff_io import is_geff, write_geff_over
 
 from .solver_params import SolverParams
 
 if TYPE_CHECKING:
-    import networkx as nx
+    pass
 
 STAMP_FORMAT = "%m%d%Y_%H%M%S"
 PARAMS_FILENAME = "solver_params.json"
 IN_POINTS_FILENAME = "input_points.npy"
 GAPS_FILENAME = "gaps.txt"
+ATTRS_FILENAME = "attrs.json"
+
+# Internal edge attr keys managed by tracksdata — not user-facing features
+_TRACKSDATA_INTERNAL_EDGE_KEYS = frozenset({"edge_id", "source_id", "target_id"})
 
 
 class MotileRun(SolutionTracks):
@@ -30,27 +37,36 @@ class MotileRun(SolutionTracks):
 
     def __init__(
         self,
-        graph: nx.DiGraph,
-        segmentation: np.ndarray | None,
+        graph: td.graph.GraphView,
         run_name: str,
-        time_attr: str = "time",
+        time_attr: str = "t",
         pos_attr: str | tuple[str] | list[str] = "pos",
         scale: list[float] | None = None,
+        ndim: int | None = None,
         solver_params: SolverParams | None = None,
+        input_segmentation: np.ndarray | None = None,
         input_points: np.ndarray | None = None,
         time: datetime | None = None,
         gaps: list[float] | None = None,
         status: str = "done",
+        _features=None,
+        _segmentation=None,
     ):
+        if ndim is None and input_segmentation is not None:
+            ndim = input_segmentation.ndim
+
         super().__init__(
             graph,
-            segmentation=segmentation,
             time_attr=time_attr,
             pos_attr=pos_attr,
             scale=scale,
+            ndim=ndim,
+            features=_features,
+            _segmentation=_segmentation,
         )
         self.run_name = run_name
         self.solver_params = solver_params
+        self.input_segmentation = input_segmentation
         self.input_points = input_points
         self.gaps = gaps
         self.status = status
@@ -89,27 +105,93 @@ class MotileRun(SolutionTracks):
             ) from e
         return time, run_name
 
-    def save(self, base_path: str | Path) -> Path:
-        """Save the run in the provided directory. Creates a subdirectory from
-        the timestamp and run name and stores one file for each element of the
-        run in that subdirectory.
+    @classmethod
+    def _resolve_name_and_time(
+        cls, run_dir: Path, attrs: dict | None
+    ) -> tuple[datetime | None, str]:
+        """Determine the run name and run time for a run being loaded.
+
+        Runs used to be saved in a directory named by _make_id, so the name and
+        time could be recovered by unpacking the directory name. Newer runs
+        store both in the attrs file instead, which lets them be saved to a
+        directory the user named. Falls back through both, and finally to the
+        directory name with no time, so that a run directory is loadable
+        however it was named. A None time is replaced with the current time by
+        __init__, so the run still displays.
 
         Args:
-            base_path (str | Path): The directory to save the run in.
+            run_dir (Path): The directory the run is being loaded from.
+            attrs (dict | None): The loaded attrs, or None if there is no
+                attrs file.
 
         Returns:
-            (Path): The Path that the run was saved in. The last part of the
-            path is the directory that was created to store the run.
+            tuple[datetime | None, str]: The run time and run name.
         """
-        base_path = Path(base_path)
-        run_dir = base_path / self._make_id()
-        Path.mkdir(run_dir)
-        save_tracks(self, run_dir)
+        if attrs is not None and attrs.get("run_name") is not None:
+            stamp = attrs.get("time")
+            time = datetime.fromisoformat(stamp) if stamp is not None else None
+            return time, attrs["run_name"]
+        try:
+            return cls._unpack_id(run_dir.stem)
+        except ValueError:
+            return None, run_dir.stem
+
+    def save(self, path: str | Path, save_segmentation: bool = False) -> Path:
+        """Save the run as a geff store at the provided path.
+
+        The geff store is written at exactly `path` — no subdirectory is
+        created — and the rest of the run (solver params, attrs, input points,
+        gaps) is stored inside that store alongside the graph. A geff is a zarr
+        directory, and writing a geff only replaces geff-controlled groups, so
+        these files survive re-saving over the same store.
+
+        Args:
+            path (str | Path): The geff store to save the run to. Created if
+                it does not exist, and replaced if it does.
+            save_segmentation (bool): Ignored. Kept for backwards
+                compatibility; the segmentation is never written here.
+
+        Returns:
+            (Path): The Path that the run was saved to.
+        """
+        run_dir = Path(path)
+        write_geff_over(self, run_dir)
         self._save_params(run_dir)
+        self._save_attrs(run_dir)
         if self.input_points is not None:
             self._save_array(run_dir, IN_POINTS_FILENAME, self.input_points)
         self._save_list(list_to_save=self.gaps, run_dir=run_dir, filename=GAPS_FILENAME)
         return run_dir
+
+    @staticmethod
+    def geff_path(run_dir: Path | str) -> Path | None:
+        """Return the geff store holding a saved run's graph.
+
+        Mirrors the layouts that :meth:`load` accepts. Runs saved by the
+        current version are themselves the geff store. Returns None for v1
+        runs, which stored the graph as graph.json rather than as a geff.
+
+        Args:
+            run_dir (Path | str): A directory created by MotileRun.save.
+        """
+        run_dir = Path(run_dir)
+        if MotileRun._is_geff(run_dir):
+            return run_dir
+        tracks_path = run_dir / "tracks.geff"
+        if tracks_path.exists():
+            return tracks_path
+        if (run_dir / "graph.json").exists():
+            return None
+        return run_dir / "tracks"
+
+    @staticmethod
+    def _is_geff(directory: Path) -> bool:
+        """Whether the given directory is itself a geff store.
+
+        Distinguishes a run saved as a geff from an older run directory that
+        merely contains one, which is exactly what load() needs.
+        """
+        return is_geff(directory)
 
     @classmethod
     def load(cls, run_dir: Path | str, output_required: bool = True):
@@ -128,53 +210,80 @@ class MotileRun(SolutionTracks):
         """
         if isinstance(run_dir, str):
             run_dir = Path(run_dir)
-        time, run_name = cls._unpack_id(run_dir.stem)
         params = cls._load_params(run_dir)
         input_points = cls._load_array(run_dir, IN_POINTS_FILENAME, required=False)
-        tracks = load_tracks(run_dir, seg_required=False, solution=True)
+        attrs = cls._load_attrs(run_dir)
+        time, run_name = cls._resolve_name_and_time(run_dir, attrs)
+        # Support the current format (the run dir is itself the geff store) as
+        # well as old v1 ("graph.json" at run dir level), intermediate
+        # ("tracks" zarr), and ("tracks.geff") save formats
+        tracks_path = run_dir / "tracks.geff"
+        if cls._is_geff(run_dir):
+            tracks = import_from_geff(run_dir)
+        elif tracks_path.exists():
+            tracks = import_from_geff(tracks_path)
+        elif (run_dir / "graph.json").exists():
+            tracks = load_v1_tracks(run_dir, solution=True)
+        else:
+            tracks = import_from_geff(run_dir / "tracks")
+        if attrs is not None:
+            # New runs use the "shape" key; fall back to the legacy
+            # "segmentation_shape" key for runs saved by older versions.
+            seg_shape = attrs.get("shape", attrs.get("segmentation_shape"))
+            if seg_shape is not None:
+                tracks.graph._update_metadata(shape=tuple(seg_shape))
+            scale = attrs.get("scale") or tracks.scale
+            time_attr = attrs.get("time_attr") or tracks.features.time_key
+        else:
+            scale = tracks.scale
+            time_attr = tracks.features.time_key
         gaps = cls._load_list(run_dir=run_dir, filename=GAPS_FILENAME, required=False)
         return cls(
-            graph=tracks.graph,
-            segmentation=tracks.segmentation,
+            graph=tracks.graph_full,
             run_name=run_name,
             solver_params=params,
             input_points=input_points,
             time=time,
             gaps=gaps,
             pos_attr=tracks.features.position_key,
-            time_attr=tracks.features.time_key,
-            scale=tracks.scale,
+            time_attr=time_attr,
+            scale=scale,
+            ndim=tracks.ndim,
+            _features=tracks.features,
         )
 
     def _save_params(self, run_dir: Path):
         """Save the run parameters in the provided run directory. Currently
-        dumps the parameters dict into a json file.
+        dumps the parameters dict into a json file. Skips writing if there are
+        no params, which only happens for a run loaded from a directory that
+        had no params file (see _load_params).
 
         Args:
             run_dir (Path): A directory in which to save the parameters file.
         """
+        if self.solver_params is None:
+            return
         params_file = run_dir / PARAMS_FILENAME
         with open(params_file, "w") as f:
             json.dump(self.solver_params.__dict__, f)
 
     @staticmethod
-    def _load_params(run_dir: Path) -> SolverParams:
+    def _load_params(run_dir: Path) -> SolverParams | None:
         """Load parameters from the parameters json file in the provided
-        directory.
+        directory. Returns None if the file is absent, which is the case for
+        v1 run directories and for runs saved by versions that wrapped
+        imported (CSV/geff) tracks in a MotileRun with no solver params.
 
         Args:
             run_dir (Path): The directory in which to find the parameters file.
 
-        Raises:
-            FileNotFoundError: If the parameters file is not found in the
-                provided directory.
-
         Returns:
-            SolverParams: The solver parameters loaded from disk.
+            SolverParams | None: The solver parameters, or None if no params
+                file exists in the run directory.
         """
         params_file = run_dir / PARAMS_FILENAME
         if not params_file.is_file():
-            raise FileNotFoundError(f"Parameters not found at {params_file}")
+            return None
         with open(params_file) as f:
             params_dict = json.load(f)
         return SolverParams(**params_dict)
@@ -222,25 +331,51 @@ class MotileRun(SolutionTracks):
             return None
 
     def _save_attrs(self, directory: Path):
-        """Save the time_attr, pos_attr, and scale in a json file in the given directory.
+        """Save the run name, run time, time_attr, scale, and
+        shape in a json file.
+
+        The run name and time are stored here rather than being recoverable
+        from the directory name alone (see _make_id), so that a run can be
+        saved to a directory the user named.
+
+        Note that "time" is when the run was solved, while "time_attr" is the
+        name of the graph's time column.
 
         Args:
             directory (Path):  The directory in which to save the attributes
         """
-        out_path = directory / self.ATTRS_FILE
-        attrs_dict = {
-            "time_attr": self.time_attr
-            if not isinstance(self.time_attr, np.ndarray)
-            else self.time_attr.tolist(),
-            "pos_attr": self.pos_attr
-            if not isinstance(self.pos_attr, np.ndarray)
-            else self.pos_attr.tolist(),
-            "scale": self.scale
+        out_path = directory / ATTRS_FILENAME
+        seg_shape = self.graph.metadata.get("shape")
+        scale = (
+            self.scale
             if not isinstance(self.scale, np.ndarray)
-            else self.scale.tolist(),
+            else self.scale.tolist()
+        )
+        attrs_dict = {
+            "shape": list(seg_shape) if seg_shape is not None else None,
+            "scale": scale,
+            "time_attr": self.features.time_key,
+            "run_name": self.run_name,
+            "time": self.time.isoformat(),
         }
         with open(out_path, "w") as f:
             json.dump(attrs_dict, f)
+
+    @staticmethod
+    def _load_attrs(run_dir: Path) -> dict | None:
+        """Load attrs from the attrs json file in the provided directory, if present.
+
+        Args:
+            run_dir (Path): The directory in which to find the attrs file.
+
+        Returns:
+            dict | None: The attrs dict, or None if the file was not found.
+        """
+        attrs_file = run_dir / ATTRS_FILENAME
+        if not attrs_file.is_file():
+            return None
+        with open(attrs_file) as f:
+            return json.load(f)
 
     def _save_list(self, list_to_save: list | None, run_dir: Path, filename: str):
         if list_to_save is None:
@@ -274,7 +409,8 @@ class MotileRun(SolutionTracks):
         """
         base_path = Path(base_path)
         run_dir = base_path / self._make_id()
-        # Lets be safe and remove the expected files and then the directory
-        (run_dir / PARAMS_FILENAME).unlink()
-        (run_dir / GAPS_FILENAME).unlink()
+        # Lets be safe and remove the expected files and then the directory.
+        # Both files are optional (params for imported runs, gaps when None).
+        (run_dir / PARAMS_FILENAME).unlink(missing_ok=True)
+        (run_dir / GAPS_FILENAME).unlink(missing_ok=True)
         super().delete(run_dir)

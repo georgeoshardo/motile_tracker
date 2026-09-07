@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 
@@ -34,7 +34,7 @@ class KymographLinkRenderData:
     edge_colors: list[np.ndarray]
 
     @classmethod
-    def empty(cls) -> "KymographLinkRenderData":
+    def empty(cls) -> KymographLinkRenderData:
         return cls(
             segments=[],
             properties={
@@ -97,22 +97,35 @@ def visible_frame_range(
 
 
 def concat_time_to_kymograph(
-    stack: np.ndarray,
+    stack,
     *,
     page_start: int = 0,
     page_length: int | None = None,
 ) -> np.ndarray:
-    if stack.ndim != 3:
-        raise ValueError(f"Expected (T, Y, X) stack, got {stack.shape}.")
+    """Place the frames of one page of a (T, Y, X) stack side by side along X.
 
-    geometry = infer_kymograph_geometry(tuple(int(v) for v in stack.shape))
+    Only the frames on the requested page are read, so `stack` may be any array-like
+    that supports `shape` and slicing along the first axis (numpy, dask, zarr, or the
+    lazy segmentation array of a funtracks Tracks object).
+    """
+    shape = tuple(int(v) for v in stack.shape)
+    if len(shape) != 3:
+        raise ValueError(f"Expected (T, Y, X) stack, got {shape}.")
+
+    geometry = infer_kymograph_geometry(shape)
     if page_length is None:
         page_length = geometry.t_size
     start, stop = visible_frame_range(geometry, page_start, page_length)
-    frames = [stack[t] for t in range(start, stop)]
-    if not frames:
-        return np.zeros((geometry.y_size, 0), dtype=stack.dtype)
-    return np.concatenate(frames, axis=1)
+    if stop <= start:
+        return np.zeros((geometry.y_size, 0), dtype=getattr(stack, "dtype", float))
+
+    try:
+        page = np.asarray(stack[start:stop])
+    except (TypeError, NotImplementedError):
+        # array-likes without slicing support: materialize, then slice
+        page = np.asarray(stack)[start:stop]
+    # (n_frames, Y, X) -> (Y, n_frames * X)
+    return np.ascontiguousarray(page.transpose(1, 0, 2).reshape(geometry.y_size, -1))
 
 
 def point_to_kymograph_coords(
@@ -152,7 +165,9 @@ def kymograph_coords_to_indices(
     if x_global_world < 0:
         return None
 
-    frame_offset = int(np.floor(x_global_world / max(geometry.frame_world_width, 1e-12)))
+    frame_offset = int(
+        np.floor(x_global_world / max(geometry.frame_world_width, 1e-12))
+    )
     timepoint = start + frame_offset
     if timepoint < start or timepoint >= stop:
         return None
@@ -234,7 +249,7 @@ def build_kymograph_link_data(
 ) -> tuple[KymographLinkRenderData, KymographLinkRenderData]:
     visible_nodes_set = None
     if not isinstance(visible_nodes, str):
-        visible_nodes_set = set(int(node) for node in visible_nodes)
+        visible_nodes_set = {int(node) for node in visible_nodes}
 
     continuation_segments: list[np.ndarray] = []
     continuation_edge_colors: list[np.ndarray] = []
@@ -256,23 +271,36 @@ def build_kymograph_link_data(
         "logical_link_id": [],
     }
 
-    logical_link_id = 0
-    for source_node, target_node in tracks.graph.edges:
-        if visible_nodes_set is not None and (
-            source_node not in visible_nodes_set or target_node not in visible_nodes_set
-        ):
-            continue
+    edges = [(int(source), int(target)) for source, target in tracks.graph.edge_list()]
+    if visible_nodes_set is not None:
+        edges = [
+            (source, target)
+            for source, target in edges
+            if source in visible_nodes_set and target in visible_nodes_set
+        ]
+    if not edges:
+        return KymographLinkRenderData.empty(), KymographLinkRenderData.empty()
 
+    # fetch the node data in bulk: per-node lookups are slow on large graphs
+    nodes = sorted({node for edge in edges for node in edge})
+    times = dict(zip(nodes, (int(t) for t in tracks.get_times(nodes)), strict=True))
+    track_ids = dict(
+        zip(nodes, (int(t) for t in tracks.get_track_ids(nodes)), strict=True)
+    )
+    positions = dict(zip(nodes, np.asarray(tracks.get_positions(nodes)), strict=True))
+
+    logical_link_id = 0
+    for source_node, target_node in edges:
         source_coords = point_to_kymograph_coords(
-            timepoint=tracks.get_time(source_node),
-            position=tracks.get_position(source_node),
+            timepoint=times[source_node],
+            position=positions[source_node],
             geometry=geometry,
             page_start=page_start,
             page_length=page_length,
         )
         target_coords = point_to_kymograph_coords(
-            timepoint=tracks.get_time(target_node),
-            position=tracks.get_position(target_node),
+            timepoint=times[target_node],
+            position=positions[target_node],
             geometry=geometry,
             page_start=page_start,
             page_length=page_length,
@@ -280,15 +308,14 @@ def build_kymograph_link_data(
         if source_coords is None or target_coords is None:
             continue
 
-        source_time = int(tracks.get_time(source_node))
-        target_time = int(tracks.get_time(target_node))
-        source_track_id = int(tracks.get_track_id(source_node))
-        target_track_id = int(tracks.get_track_id(target_node))
+        source_time = times[source_node]
+        target_time = times[target_node]
+        source_track_id = track_ids[source_node]
+        target_track_id = track_ids[target_node]
         logical_link_id += 1
 
         is_continuation = (
-            source_track_id == target_track_id
-            and target_time == source_time + 1
+            source_track_id == target_track_id and target_time == source_time + 1
         )
         is_branch = source_track_id != target_track_id
 
