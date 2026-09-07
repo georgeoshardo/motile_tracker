@@ -1,32 +1,35 @@
 import pandas as pd
 import pytest
-from funtracks.data_model import SolutionTracks
 from qtpy.QtWidgets import QApplication
 
-from motile_tracker.data_views.views.tree_view.custom_table_widget import (
+from motile_tracker.data_views.views.table.custom_table_widget import (
     ColoredTableWidget,
 )
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
-@pytest.fixture
-def setup_tracks_viewer(make_napari_viewer, graph_2d):
-    """Create a TracksViewer with tracks loaded."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
+@pytest.fixture(autouse=True)
+def clear_viewer_layers(viewer):
+    """Clear viewer layers between tests."""
+    yield
+    viewer.layers.clear()
 
+
+@pytest.fixture
+def setup_tracks_viewer(viewer, solution_tracks_2d):
+    """Create a TracksViewer with tracks loaded."""
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     return viewer, tracks_viewer
 
 
 @pytest.fixture
 def colored_table_widget(qtbot, setup_tracks_viewer):
-    _, tracks_viewer = setup_tracks_viewer
+    viewer, tracks_viewer = setup_tracks_viewer
 
     # Build dataframe from tracks
-    nodes = list(tracks_viewer.tracks.graph.nodes())
+    nodes = tracks_viewer.tracks.graph.node_ids()
 
     df = pd.DataFrame(
         {
@@ -35,7 +38,9 @@ def colored_table_widget(qtbot, setup_tracks_viewer):
         }
     )
 
-    widget = ColoredTableWidget(tracks_viewer, df)
+    tracks_viewer.track_df = df
+
+    widget = ColoredTableWidget(viewer)
     qtbot.addWidget(widget)
 
     return widget, tracks_viewer
@@ -46,8 +51,8 @@ def test_table_population(colored_table_widget):
 
     table = widget._table_widget
 
-    assert table.rowCount() > 0
-    assert table.columnCount() >= 1
+    assert table.model().rowCount() > 0
+    assert table.model().columnCount() >= 1
 
 
 def test_table_selection_updates_tracksviewer(colored_table_widget, qtbot):
@@ -56,7 +61,7 @@ def test_table_selection_updates_tracksviewer(colored_table_widget, qtbot):
 
     first_row_node = widget._table["ID"][0]
 
-    with qtbot.waitSignal(tracks_viewer.selected_nodes.list_updated, timeout=1000):
+    with qtbot.waitSignal(tracks_viewer.selected_nodes.selection_updated, timeout=1000):
         table.selectRow(0)
 
     assert first_row_node in tracks_viewer.selected_nodes.as_list
@@ -86,7 +91,7 @@ def test_no_infinite_selection_loop(colored_table_widget, qtbot):
     def spy():
         spy_count["calls"] += 1
 
-    tracks_viewer.selected_nodes.list_updated.connect(spy)
+    tracks_viewer.selected_nodes.selection_updated.connect(spy)
 
     table.selectRow(0)
     qtbot.wait(50)
@@ -111,7 +116,7 @@ def test_center_from_tracksviewer_scrolls_table(colored_table_widget, qtbot):
     # Force small viewport so only 2 rows fit
     row_height = 30
     table.setFixedHeight(row_height * 2)
-    for i in range(table.rowCount()):
+    for i in range(table.model().rowCount()):
         table.setRowHeight(i, row_height)
 
     widget.show()

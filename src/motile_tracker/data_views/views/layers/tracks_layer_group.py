@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import napari
-from funtracks.data_model.tracks import Tracks
+from funtracks.data_model import Tracks
 from napari.experimental import link_layers, unlink_layers
 
 from motile_tracker.data_views.views.layers.track_graph import TrackGraph
@@ -47,11 +47,7 @@ class TracksLayerGroup:
         else:
             self.seg_layer = None
 
-        if (
-            self.tracks is not None
-            and self.tracks.graph is not None
-            and self.tracks.graph.number_of_nodes() != 0
-        ):
+        if self.tracks is not None and self.tracks.graph is not None:
             self.tracks_layer = TrackGraph(
                 name=self.name + "_tracks",
                 tracks_viewer=self.tracks_viewer,
@@ -87,17 +83,6 @@ class TracksLayerGroup:
             self.viewer.add_layer(self.points_layer)
         if self.seg_layer is not None:
             self.viewer.add_layer(self.seg_layer)
-            # silly fix for loading zarr on Windows: load labels only at the end and then
-            # swap layer order here to avoid error "access violation reading..."
-            source_index = len(self.viewer.layers) - 1
-            target_index = max(0, source_index - 1)
-            if source_index != target_index:
-                self.viewer.layers.move(source_index, target_index)
-
-            # This is just to ensure that the layer selection makes sense, because after
-            # moving a layer, the layer tools are not updated correctly.
-            self.viewer.layers.selection.clear()
-            self.viewer.layers.selection.add(self.viewer.layers[-1])
 
         # self.link_experimental_clipping_planes()
 
@@ -146,6 +131,7 @@ class TracksLayerGroup:
             if isinstance(visible_nodes, str):
                 visible_tracks = visible_nodes  # "all"
             else:
+                # visible_nodes is a small subset — use per-node lookup, not bulk batch
                 visible_tracks = list(
                     {self.tracks.get_track_id(node) for node in visible_nodes}
                 )
@@ -156,7 +142,7 @@ class TracksLayerGroup:
         location, if the node is not already in the field of view"""
 
         if self.seg_layer is None or self.seg_layer.mode == "pan_zoom":
-            location = self.tracks.get_positions([node], incl_time=True)[0].tolist()
+            location = self.tracks.get_position(node, incl_time=True)
             assert len(location) == self.viewer.dims.ndim, (
                 f"Location {location} does not match viewer number of dims "
                 f"{self.viewer.dims.ndim}"

@@ -75,6 +75,8 @@ class KymographLayerGroup:
                 self.page_length,
             )
         if self.active:
+            # rebuild the layers so that they pick up the new tracks and name
+            self.remove_napari_layers()
             self._refresh()
 
     def set_image_layer_name(self, layer_name: str | None) -> None:
@@ -96,14 +98,18 @@ class KymographLayerGroup:
     ) -> None:
         self.detached_image_layer = layer
 
-    def set_page(self, *, page_start: int | None = None, page_length: int | None = None) -> None:
+    def set_page(
+        self, *, page_start: int | None = None, page_length: int | None = None
+    ) -> None:
         if self.geometry is None:
             return
         if page_length is not None:
             self.page_length = max(1, int(page_length))
         if page_start is not None:
             self.page_start = int(page_start)
-        self.page_start = clamp_page_start(self.page_start, self.geometry, self.page_length)
+        self.page_start = clamp_page_start(
+            self.page_start, self.geometry, self.page_length
+        )
         if self.active:
             self._refresh()
 
@@ -198,7 +204,9 @@ class KymographLayerGroup:
             return None
 
         for layer in self._candidate_image_layers():
-            if layer.name == self.image_layer_name and self._is_usable_image_layer(layer):
+            if layer.name == self.image_layer_name and self._is_usable_image_layer(
+                layer
+            ):
                 return layer
         return None
 
@@ -206,7 +214,9 @@ class KymographLayerGroup:
         layers = [
             layer
             for layer in self.viewer.layers
-            if isinstance(layer, napari.layers.Image) and layer is not self.background_layer
+            if isinstance(layer, napari.layers.Image)
+            and layer is not self.background_layer
+            and not layer.multiscale
         ]
         if (
             self.detached_image_layer is not None
@@ -223,9 +233,7 @@ class KymographLayerGroup:
             if tuple(layer.data.shape) != tuple(self.tracks.segmentation.shape):
                 return False
             track_scale_values = (
-                self.tracks.scale
-                if self.tracks.scale is not None
-                else (1.0, 1.0, 1.0)
+                self.tracks.scale if self.tracks.scale is not None else (1.0, 1.0, 1.0)
             )
             track_scale = tuple(float(v) for v in track_scale_values)
             layer_scale = tuple(float(v) for v in layer.scale)
@@ -239,8 +247,9 @@ class KymographLayerGroup:
         image_layer = self._resolved_image_layer()
         if image_layer is None:
             return None
+        # only the frames of the current page are read from the (possibly lazy) data
         return concat_time_to_kymograph(
-            np.asarray(image_layer.data),
+            image_layer.data,
             page_start=self.page_start,
             page_length=self.page_length,
         )
@@ -248,13 +257,18 @@ class KymographLayerGroup:
     def _page_nodes(self) -> list[int]:
         if self.tracks is None or self.geometry is None:
             return []
-        start, stop = visible_frame_range(self.geometry, self.page_start, self.page_length)
-        nodes: list[int] = []
-        for node in self.tracks.graph.nodes:
-            timepoint = self.tracks.get_time(node)
-            if start <= timepoint < stop:
-                nodes.append(node)
-        return nodes
+        start, stop = visible_frame_range(
+            self.geometry, self.page_start, self.page_length
+        )
+        node_ids = self.tracks.graph.node_ids()
+        if not node_ids:
+            return []
+        times = self.tracks.get_times(node_ids)  # bulk lookup: per-node calls are slow
+        return [
+            int(node)
+            for node, timepoint in zip(node_ids, times, strict=True)
+            if start <= timepoint < stop
+        ]
 
     def _refresh_background(self) -> None:
         image = self._page_image()
@@ -276,7 +290,11 @@ class KymographLayerGroup:
             self.background_layer.scale = (self.geometry.y_scale, self.geometry.x_scale)
 
     def _refresh_labels(self) -> None:
-        if self.tracks is None or self.tracks.segmentation is None or self.geometry is None:
+        if (
+            self.tracks is None
+            or self.tracks.segmentation is None
+            or self.geometry is None
+        ):
             self.remove_napari_layer(self.labels_layer)
             self.labels_layer = None
             return
@@ -300,7 +318,11 @@ class KymographLayerGroup:
             )
 
     def _refresh_points(self) -> None:
-        if self.tracks is None or self.geometry is None or self.tracks.graph.number_of_nodes() == 0:
+        if (
+            self.tracks is None
+            or self.geometry is None
+            or self.tracks.graph.num_nodes() == 0
+        ):
             self.remove_napari_layer(self.points_layer)
             self.points_layer = None
             return
@@ -332,7 +354,9 @@ class KymographLayerGroup:
             geometry=self.geometry,
             page_start=self.page_start,
             page_length=self.page_length,
-            track_color_resolver=lambda track_id: self.tracks_viewer.colormap.map(track_id),
+            track_color_resolver=lambda track_id: self.tracks_viewer.colormap.map(
+                track_id
+            ),
             visible_nodes=self.visible_nodes,
         )
 
@@ -414,7 +438,9 @@ class KymographLayerGroup:
             self.remove_napari_layers()
             return
 
-        self.page_start = clamp_page_start(self.page_start, self.geometry, self.page_length)
+        self.page_start = clamp_page_start(
+            self.page_start, self.geometry, self.page_length
+        )
         self._refresh_background()
         self._refresh_labels()
         self._refresh_points()
@@ -443,7 +469,9 @@ class KymographLayerGroup:
         if active_layer in interactive_layers:
             return
 
-        preferred_layer = self.labels_layer or self.points_layer or self.background_layer
+        preferred_layer = (
+            self.labels_layer or self.points_layer or self.background_layer
+        )
         if preferred_layer is None or preferred_layer not in self.viewer.layers:
             return
 
@@ -458,7 +486,8 @@ class KymographLayerGroup:
             if isinstance(visible_nodes, str):
                 visible = visible_nodes
             else:
-                visible = [node for node in visible_nodes if node in self._page_nodes()]
+                page_nodes = set(self._page_nodes())
+                visible = [node for node in visible_nodes if node in page_nodes]
             self.labels_layer.update_label_colormap(visible)
         self._refresh_links()
 
@@ -485,6 +514,8 @@ class KymographLayerGroup:
     def node_on_page(self, node: int) -> bool:
         if self.tracks is None or self.geometry is None:
             return False
-        start, stop = visible_frame_range(self.geometry, self.page_start, self.page_length)
+        start, stop = visible_frame_range(
+            self.geometry, self.page_start, self.page_length
+        )
         timepoint = self.tracks.get_time(node)
         return start <= timepoint < stop

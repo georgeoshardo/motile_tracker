@@ -19,6 +19,7 @@ from motile_tracker.data_views.keybindings_config import (
 )
 from motile_tracker.data_views.views.layers.click_utils import (
     detect_click,
+    detect_side_button,
     get_click_value,
 )
 from motile_tracker.data_views.views.layers.contour_labels import ContourLabels
@@ -55,20 +56,15 @@ def _new_label(layer: TrackLabels, new_track_id=True):
             it to the selected_track attribute. Defaults to True.
     """
 
-    if isinstance(layer.data, np.ndarray):
-        new_selected_label = np.max(layer.data) + 1
-        if new_track_id or layer.tracks_viewer.selected_track is None:
-            layer.tracks_viewer.set_new_track_id()
-        layer.selected_label = new_selected_label
-        layer.colormap.color_dict[new_selected_label] = (
-            layer.tracks_viewer.track_id_color
-        )
-        # to refresh, otherwise you paint with a transparent label until you
-        # release the mouse
-        with layer.events.selected_label.blocker():
-            layer.colormap = DirectLabelColormap(color_dict=layer.colormap.color_dict)
-    else:
-        show_info("Calculating empty label on non-numpy array is not supported")
+    new_selected_label = max(layer.tracks_viewer.tracks.graph.node_ids(), default=0) + 1
+    if new_track_id or layer.tracks_viewer.selected_track is None:
+        layer.tracks_viewer.set_new_track_id()
+    layer.selected_label = new_selected_label
+    layer.colormap.color_dict[new_selected_label] = layer.tracks_viewer.track_id_color
+    # to refresh, otherwise you paint with a transparent label until you
+    # release the mouse
+    with layer.events.selected_label.blocker():
+        layer.colormap = DirectLabelColormap(color_dict=layer.colormap.color_dict)
 
 
 class TrackLabels(ContourLabels):
@@ -112,9 +108,7 @@ class TrackLabels(ContourLabels):
         # Listen to paint events and changing the selected label
         self.mouse_drag_callbacks.append(self.click)
         self.events.paint.connect(self._on_paint)
-        self.tracks_viewer.selected_nodes.list_updated.connect(
-            self.update_selected_label
-        )
+        self.tracks_viewer.node_selection_updated.connect(self.update_selected_label)
         self.events.mode.connect(self._check_mode)
         self.events.selected_label.connect(self._ensure_valid_label)
 
@@ -123,14 +117,16 @@ class TrackLabels(ContourLabels):
 
     # Connect click events to node selection
     def click(self, _, event):
-        if (
-            event.type == "mouse_press" and self.mode == "pan_zoom"
-        ):  # disable selecting in lineage mode in 3D
+        side_button = detect_side_button(event)
+        if side_button is not None:
+            self.process_click(event, side_button=side_button)
+        elif self.mode == "pan_zoom" and event.type == "mouse_press":
+            # disable selecting in lineage mode in 3D
             # differentiate between click and drag
             was_click = yield from detect_click(event)
             if was_click:
                 value = get_click_value(self, event)
-                self.process_click(event, value)
+                self.process_click(event, value=value)
 
     def assign_new_label(self, event):
         """Function for orthoviews to connect to so the 'm' event can be processed here"""
@@ -138,34 +134,44 @@ class TrackLabels(ContourLabels):
         new_label(self)
 
     def process_click(
-        self, event: Event, label: int, layer: ContourLabels | None = None
+        self,
+        event: Event,
+        value: int | None = None,
+        side_button: int | None = None,
+        layer: ContourLabels | None = None,
     ):
         """Process the click event to update the selected nodes.
 
         Args:
             event (Event): The click event.
-            label (int): The label value at the clicked position.
+            value (int): The label value (node) at the clicked position.
+            side_button (int | None): the integer for the mouse side buttons (4: back, 5: forward)
             layer (ContourLabels | None): The (ortho view) layer from which the click originated.
                 If provided, it is used to check label visibility in that layer's colormap.
         """
 
-        if label is not None and label != 0:
+        # Intercept mouse side button navigation (back/forward)
+        if side_button is not None:
+            self.tracks_viewer.select_node_set_from_history(previous=side_button == 4)
+            return
+
+        if value is not None and value != 0:
             # check visibility in the respective colormap. If a label is not visible, it
             # is not allowed to be selected from this view
             if layer is not None:
-                is_visible = layer.colormap.color_dict.get(label)[3] > 0
+                is_visible = layer.colormap.color_dict.get(value)[3] > 0
             else:
-                is_visible = self.colormap.color_dict.get(label)[3] > 0
+                is_visible = self.colormap.color_dict.get(value)[3] > 0
             if is_visible:
                 append = "Shift" in event.modifiers
                 jump = "Control" in event.modifiers
                 if jump:
-                    self.tracks_viewer.center_on_node(label)
+                    self.tracks_viewer.center_on_node(value)
                 else:
-                    self.tracks_viewer.selected_nodes.add(label, append)
+                    self.tracks_viewer.selected_nodes.add(int(value), append)
             else:
                 warnings.warn(
-                    f"Node {label} is not visible in this view and cannot be selected.",
+                    f"Node {value} is not visible in this view and cannot be selected.",
                     stacklevel=2,
                 )
 
@@ -178,9 +184,19 @@ class TrackLabels(ContourLabels):
         """
         tracks = self.tracks_viewer.tracks
         if tracks is not None:
-            nodes = list(tracks.graph.nodes())
-            track_ids = [tracks.get_track_id(node) for node in nodes]
-            colors = [self.tracks_viewer.colormap.map(tid) for tid in track_ids]
+            nodes = tracks.graph.node_ids()
+            track_ids = tracks.get_track_ids(nodes)
+            # One vectorized colormap.map call for all nodes: colormap.map has a
+            # large fixed per-call overhead (cache lookup, dtype, reshape), so a
+            # single array call is ~290x faster than calling it per node (or even
+            # once per unique track id). The result is an (N, 4) array with a
+            # distinct row per node, so copy per node to get independent color
+            # arrays: set_opacity later mutates each color's alpha in place.
+            if len(track_ids) > 0:
+                mapped = self.tracks_viewer.colormap.map(np.asarray(track_ids))
+                colors = [color.copy() for color in mapped]
+            else:
+                colors = []
         else:
             nodes = []
             colors = []
@@ -251,7 +267,10 @@ class TrackLabels(ContourLabels):
             for time_point in time_points:
                 time_mask = indices[0] == time_point
                 actions.append(
-                    (tuple(indices[dim][time_mask] for dim in range(ndim)), old_value)
+                    (
+                        tuple(indices[dim][time_mask] for dim in range(ndim)),
+                        int(old_value),
+                    )
                 )
         return new_value, actions
 
@@ -374,28 +393,43 @@ class TrackLabels(ContourLabels):
             )
 
     def _ensure_valid_label(self, event: Event | None = None):
-        """Make sure a valid label is selected, because it is not allowed to paint with a
-        label that already exists at a different timepoint.
+        """Make sure a valid label is selected, because it is not allowed to paint with
+        a label that already exists at a different timepoint.
+
         Scenarios:
+
         1. If a node with the selected label value (node id) exists at a different time
-            point, check if there is any node with the same track_id at the current time
-            point
-            1.a if there is a node with the same track id, select that one, so that it
-                can be used to update an existing node
-            1.b if there is no node with the same track id, create a new node id and
-                paint with the track_id of the selected label.
-              This can be used to add a new node with the same track id at a time point
-              where it does not (yet) exist (anymore).
-        2. if there is no existing node with this value in the graph, it is assume that
-            you want to add a node with the current track id
-        Retrieve the track_id from self.current_track_id and use it to find if there are
-        any nodes of this track id at current time point
+           point, check if there is any node with the same track_id at the current time
+           point.
+
+           a. If there is a node with the same track id, select that one, so that it
+              can be used to update an existing node.
+           b. If there is no node with the same track id, create a new node id and
+              paint with the track_id of the selected label. This can be used to add a
+              new node with the same track id at a time point where it does not (yet)
+              exist (anymore).
+
+        2. If there is no existing node with this value in the graph, it is assumed that
+           you want to add a node with the current track id. Retrieve the track_id from
+           self.current_track_id and use it to find if there are any nodes of this track
+           id at current time point.
+
         3. If no node with this label exists yet, it is valid and can be used to start a
-            new track id. Therefore, create a new node id and map a new color.
-            Add it to the dictionary.
+           new track id. Therefore, create a new node id and map a new color. Add it to
+           the dictionary.
+
         4. If a node with the label exists at the current time point, it is valid and
-            can be used to update the existing node in a paint event. No action is needed
+           can be used to update the existing node in a paint event. No action is needed.
         """
+
+        # The background label is never a valid label to paint a node with (painting
+        # with it erases), so it should never get a track id or a color. napari binds
+        # "X" on Labels layers to swap_selected_and_background_labels, which sets
+        # selected_label to the background value: without this guard, that would give
+        # the background an opaque color and make the whole segmentation background
+        # render in the track color (see issue #493).
+        if self.selected_label == self.colormap.background_value:
+            return
 
         update_colormap = False
         if self.tracks_viewer.tracks is not None:

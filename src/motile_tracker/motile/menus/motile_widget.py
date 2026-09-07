@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from superqt.utils import thread_worker
+from tracksdata.array import GraphArrayView
 
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 from motile_tracker.motile.backend import MotileRun, build_candidate_graph, solve
@@ -75,9 +76,11 @@ class MotileWidget(QWidget):
     def edit_run(self, run: MotileRun | None):
         """Create or edit a new run in the run editor. Also removes solution layers
         from the napari viewer.
+
         Args:
-            run (MotileRun | None): Initialize the new run with the parameters and name
-                from this run. If not provided, uses the SolverParams default values.
+            run (MotileRun | None): Initialize the new run with the parameters and
+                name from this run. If not provided, uses the SolverParams default
+                values.
         """
         self.view_run_widget.hide()
         self.edit_run_widget.show()
@@ -86,7 +89,7 @@ class MotileWidget(QWidget):
 
     def _generate_tracks(self, run: MotileRun) -> None:
         """Called when we start solving a new run. Switches from run editor to run
-        viewer and starts solving of the new run in a separate thread to avoid blocking
+        viewer and starts solving of the new run in a separate thread to avoid blocking.
 
         Args:
             run (MotileRun): Start solving this motile run.
@@ -112,8 +115,8 @@ class MotileWidget(QWidget):
         Returns:
             MotileRun: The provided run with the output graph and segmentation included.
         """
-        if run.segmentation is not None:
-            input_data = run.segmentation
+        if run.input_segmentation is not None:
+            input_data = run.input_segmentation
         elif run.input_points is not None:
             input_data = run.input_points
         else:
@@ -123,28 +126,48 @@ class MotileWidget(QWidget):
             cand_graph = build_candidate_graph(input_data, run.solver_params, run.scale)
         except ValueError as e:
             if "Duplicate values found among nodes" in str(e):
-                run.segmentation = ensure_unique_labels(run.segmentation)
-                input_data = run.segmentation
+                run.input_segmentation = ensure_unique_labels(run.input_segmentation)
+                input_data = run.input_segmentation
                 cand_graph = build_candidate_graph(
                     input_data, run.solver_params, run.scale
                 )
             else:
                 raise
 
-        run.graph = solve(
+        solution_graph = solve(
             run.solver_params,
             input_data,
             lambda event_data: self._on_solver_event(run, event_data),
             scale=run.scale,
             cand_graph=cand_graph,
         )
-        # run was initialized with an empty graph, so SolutionTracks.__init__ never
-        # assigned track IDs. Now that run.graph has been replaced with the solution,
-        # we explicitly recompute them. Ideally solve() would return a SolutionTracks
-        # so track IDs are assigned at init time and this would not be needed.
-        run.enable_features([run.features.tracklet_key, run.features.lineage_key])
+        # Create a new MotileRun with the solution graph so that
+        # SolutionTracks.__init__ runs fresh and correctly assigns track IDs
+        # via _setup_core_computed_features (detecting that track_id is absent).
+        run = MotileRun(
+            graph=solution_graph,
+            run_name=run.run_name,
+            solver_params=run.solver_params,
+            input_segmentation=run.input_segmentation,
+            input_points=run.input_points,
+            time=run.time,
+            gaps=run.gaps,
+            scale=run.scale,
+            ndim=run.ndim,
+        )
+        if "mask" in run.graph.node_attr_keys():
+            seg_shape = run.graph.metadata.get("shape")
+            if seg_shape is not None:
+                run.segmentation = GraphArrayView(
+                    graph=run.graph, shape=seg_shape, attr_key="node_id", offset=0
+                )
 
-        if run.graph.number_of_nodes() == 0:
+        if run.segmentation is not None:
+            # recompute=False: area values are already on the graph nodes
+            # because compute_graph_from_seg computes area during node extraction.
+            run.enable_features(["area"], recompute=False)
+
+        if run.graph.num_nodes() == 0:
             show_warning(
                 "No tracks found - try making your edge selection value more negative"
             )

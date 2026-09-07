@@ -8,10 +8,11 @@ import napari
 import numpy as np
 from funtracks.data_model import Tracks
 from funtracks.exceptions import InvalidActionError
-from funtracks.user_actions import UserAddNode, UserDeleteNodes, UserUpdateNodeAttrs
+from funtracks.user_actions import UserAddNode, UserDeleteNodes, UserUpdateNodesAttrs
 from napari.layers.points._points_mouse_bindings import select
 from napari.utils.notifications import show_info
 from psygnal import Signal
+from psygnal.containers import Selection
 
 from motile_tracker.data_views.keybindings_config import (
     KEYMAP,
@@ -20,6 +21,7 @@ from motile_tracker.data_views.keybindings_config import (
 from motile_tracker.data_views.node_type import NodeType
 from motile_tracker.data_views.views.layers.click_utils import (
     detect_click,
+    detect_side_button,
     get_click_value,
 )
 from motile_tracker.data_views.views_coordinator.user_dialogs import (
@@ -62,15 +64,16 @@ class TrackPoints(ZOnlyPoints):
         tracks_viewer: TracksViewer,
     ):
         self.tracks_viewer = tracks_viewer
-        self.nodes = list(tracks_viewer.tracks.graph.nodes)
+        self.nodes = tracks_viewer.tracks.graph.node_ids()
         self.node_index_dict = {node: idx for idx, node in enumerate(self.nodes)}
 
-        points = self.tracks_viewer.tracks.get_positions(self.nodes, incl_time=True)
+        if len(self.nodes) > 0:
+            points = self.tracks_viewer.tracks.get_positions(self.nodes, incl_time=True)
+        else:
+            points = np.empty((0, self.tracks_viewer.tracks.ndim))
 
-        track_ids = [
-            self.tracks_viewer.tracks.get_track_id(node) for node in self.nodes
-        ]
-        colors = [self.tracks_viewer.colormap.map(track_id) for track_id in track_ids]
+        track_ids = self.tracks_viewer.tracks.get_track_ids(self.nodes)
+        colors = self._map_track_colors(track_ids)
         symbols = self.get_symbols(
             self.tracks_viewer.tracks, self.tracks_viewer.symbolmap
         )
@@ -88,7 +91,7 @@ class TrackPoints(ZOnlyPoints):
                 "track_id": track_ids,
             },  # TODO: use features
             border_color=[1, 1, 1, 1],
-            blending="translucent_no_depth",
+            blending="translucent",
         )
 
         # Key bindings (should be specified both on the viewer (in tracks_viewer)
@@ -97,14 +100,17 @@ class TrackPoints(ZOnlyPoints):
         # Connect to click events to select nodes
         @self.mouse_drag_callbacks.append
         def click(layer, event):
-            if event.type == "mouse_press" and self.mode == "pan_zoom":
+            side_button = detect_side_button(event)
+            if side_button is not None:
+                self.process_click(event, side_button=side_button)
+            elif event.type == "mouse_press" and self.mode == "pan_zoom":
                 was_click = yield from detect_click(event)
                 if was_click:
                     # find the point matching the click location, if any. Warning: the
                     # search area depends on the point size. If points are large and
                     # overlapping, this may result in the wrong value being returned.
-                    value = get_click_value(self, event)
-                    self.process_click(event, value)
+                    point_index = get_click_value(self, event)
+                    self.process_click(event, value=point_index)
 
         # listen to updates of the data
         self.events.data.connect(self._update_data)
@@ -125,25 +131,47 @@ class TrackPoints(ZOnlyPoints):
         with self.events.current_size.blocker():
             super().add(coords)
 
+    @property
+    def selected_data(self) -> Selection[int]:
+        """Set of currently selected point indices."""
+
+        return napari.layers.Points.selected_data.fget(self)
+
+    @selected_data.setter
+    def selected_data(self, selected_data) -> None:
+        """Block the current_size event while changing the selection, so that the point
+        size will not accumulate size increases when selecting points.
+        """
+
+        with self.events.current_size.blocker():
+            napari.layers.Points.selected_data.fset(self, selected_data)
+
     def process_click(
         self,
         event: Event,
-        point_index: int | None,
-        _layer: napari.layers.Points | None = None,
+        value: int | None = None,
+        side_button: int | None = None,
+        layer: napari.layers.Points | None = None,
     ):
         """Select the clicked point(s)
 
         Args:
             event (Event): The mouse event
-            point_index (int | None): The index of the clicked point, or None if no point
+            value (int | None): The index of the clicked point, or None if no point
                 was clicked
-            _layer (napari.layers.Points | None): Optional, unused. The (ortho view) layer on which the click occurred, which is forwarded by default.
+            side_button (int | None): the button index (4: back, 5: forward) if a mouse side button was used, or None if no side button was used.
+            layer (napari.layers.Points | None): Optional, unused. The (ortho view) layer on which the click occurred, which is forwarded by default.
         """
 
-        if point_index is None:
+        # Intercept mouse side button navigation (back/forward)
+        if side_button is not None:
+            self.tracks_viewer.select_node_set_from_history(previous=side_button == 4)
+            return
+
+        if value is None:
             self.tracks_viewer.selected_nodes.reset()
         else:
-            node_id = self.nodes[point_index]
+            node_id = self.nodes[value]
             append = "Shift" in event.modifiers
             jump = "Control" in event.modifiers
             if jump:
@@ -153,11 +181,13 @@ class TrackPoints(ZOnlyPoints):
 
     def set_point_size(self, size: int) -> None:
         """Sets a new default point size.
+
         NOTE: This function call is triggered by the current_size event, which is emitted
         when the user moves the 'point size' slider in the layer controls. However, this
         event is also emitted in the 'add' and 'select' functions, so we have to block the
-         signals there to avoid increasing the point size by accident, since new or
-        selected points are displayed at a 30% bigger size."""
+        signals there to avoid increasing the point size by accident, since new or
+        selected points are displayed at a 30% bigger size.
+        """
 
         self.default_size = size
         self._refresh()
@@ -168,22 +198,18 @@ class TrackPoints(ZOnlyPoints):
         self.events.data.disconnect(
             self._update_data
         )  # do not listen to new events until updates are complete
-        self.nodes = list(self.tracks_viewer.tracks.graph.nodes)
+        self.nodes = self.tracks_viewer.tracks.graph.node_ids()
 
         self.node_index_dict = {node: idx for idx, node in enumerate(self.nodes)}
 
-        track_ids = [
-            self.tracks_viewer.tracks.get_track_id(node) for node in self.nodes
-        ]
+        track_ids = self.tracks_viewer.tracks.get_track_ids(self.nodes)
         self.data = self.tracks_viewer.tracks.get_positions(self.nodes, incl_time=True)
         self.data_updated.emit()  # emit update signal for the orthogonal views to connect to
 
         self.symbol = self.get_symbols(
             self.tracks_viewer.tracks, self.tracks_viewer.symbolmap
         )
-        self.face_color = [
-            self.tracks_viewer.colormap.map(track_id) for track_id in track_ids
-        ]
+        self.face_color = self._map_track_colors(track_ids)
         self.properties = {"node_id": self.nodes, "track_id": track_ids}
         self.size = self.default_size
         self.border_color = [1, 1, 1, 1]
@@ -224,13 +250,14 @@ class TrackPoints(ZOnlyPoints):
                 new_point = event.value[-1]
                 attributes = self._create_node_attrs(new_point)
                 try:
-                    new_node_id = self.tracks_viewer.tracks._get_new_node_ids(1)[0]
-                    UserAddNode(
-                        self.tracks_viewer.tracks,
-                        node=new_node_id,
-                        attributes=attributes,
-                        force=self.tracks_viewer.force,
-                    )
+                    with self.tracks_viewer.center_node.blocked():
+                        new_node_id = self.tracks_viewer.tracks._get_new_node_ids(1)[0]
+                        UserAddNode(
+                            self.tracks_viewer.tracks,
+                            node=new_node_id,
+                            attributes=attributes,
+                            force=self.tracks_viewer.force,
+                        )
 
                 except InvalidActionError as e:
                     if e.forceable:
@@ -267,15 +294,19 @@ class TrackPoints(ZOnlyPoints):
         elif event.action == "changed":
             # we only want to allow this update if there is no seg layer
             if self.tracks_viewer.tracking_layers.seg_layer is None:
-                for ind in self.selected_data:
-                    point = self.data[ind]
-                    pos = point[1:]
-                    node_id = self.properties["node_id"][ind]
-                    UserUpdateNodeAttrs(
-                        self.tracks_viewer.tracks,
-                        node=node_id,
-                        attrs={self.tracks_viewer.tracks.features.position_key: pos},
-                    )
+                position_key = self.tracks_viewer.tracks.features.position_key
+                nodes = [
+                    int(self.properties["node_id"][ind]) for ind in self.selected_data
+                ]
+                attrs = {
+                    position_key: [self.data[ind][1:] for ind in self.selected_data]
+                }
+
+                UserUpdateNodesAttrs(
+                    self.tracks_viewer.tracks,
+                    nodes=nodes,
+                    attrs=attrs,
+                )
 
             else:
                 self._refresh()  # refresh to move points back where they belong
@@ -290,13 +321,32 @@ class TrackPoints(ZOnlyPoints):
                 node_id = self.nodes[point]
                 self.tracks_viewer.selected_nodes.add(node_id, True)
 
+    def _map_track_colors(self, track_ids: list[int]) -> np.ndarray:
+        """Map track ids to an (N, 4) array of face colors in a single colormap call.
+
+        colormap.map has a large fixed per-call overhead (cache lookup, dtype, reshape),
+        so mapping the whole array at once is ~290x faster than calling it per node (or
+        even once per unique track id): for ~37k nodes / 142 unique ids, ~1ms vs ~300ms.
+
+        With no nodes (an empty tracks graph, e.g. when tracking from scratch) a single
+        white color is returned instead of a (0, 4) array: napari's ColorManager treats
+        the color argument as *the* current color when the layer holds no data, and
+        feeding it an empty array raises in `transform_color`.
+        """
+        if len(track_ids) == 0:
+            return np.ones((1, 4))
+        return self.tracks_viewer.colormap.map(np.asarray(track_ids))
+
     def get_symbols(self, tracks: Tracks, symbolmap: dict[NodeType, str]) -> list[str]:
         statemap = {
             0: NodeType.END,
             1: NodeType.CONTINUE,
             2: NodeType.SPLIT,
         }
-        symbols = [symbolmap[statemap[degree]] for _, degree in tracks.graph.out_degree]
+        symbols = [
+            symbolmap[statemap[degree]]
+            for degree in tracks.graph.out_degree(self.nodes)
+        ]
         return symbols
 
     def update_point_outline(self, visible_nodes: list[int] | str) -> None:
@@ -322,20 +372,30 @@ class TrackPoints(ZOnlyPoints):
             self.shown[:] = False
             self.shown[indices] = True
 
-        # set border color for selected item
-        self.border_color = [1, 1, 1, 1]
-        self.size = self.default_size
-        for node in self.tracks_viewer.selected_nodes:
-            index = self.node_index_dict[node]
-            self.border_color[index] = (
-                0,
-                1,
-                1,
-                1,
-            )
-            self.size[index] = math.ceil(self.default_size + 0.3 * self.default_size)
+        n_points = len(self.data)
+        if n_points == 0:
+            # nothing to style, and napari warns when assigning empty color arrays
+            self.refresh()
+            return
 
-        # emit the event to trigger update in orthogonal views
-        self.border_color = self.border_color
-        self.size = self.size
+        # Set border color and size for the selected items. Both are built up first and
+        # then assigned once, because every assignment emits an event that the orthogonal
+        # views (if present) answer by re-slicing their copy of this layer.
+        border_colors = np.tile([1.0, 1.0, 1.0, 1.0], (n_points, 1))
+        sizes = np.full(n_points, self.default_size)
+        selected_size = math.ceil(self.default_size + 0.3 * self.default_size)
+        for node in self.tracks_viewer.selected_nodes:
+            index = self.node_index_dict.get(node, None)
+            if index is not None:
+                border_colors[index] = (
+                    0,
+                    1,
+                    1,
+                    1,
+                )
+                sizes[index] = selected_size
+
+        # size first: the orthogonal views read it when the border color event arrives
+        self.size = sizes
+        self.border_color = border_colors
         self.refresh()

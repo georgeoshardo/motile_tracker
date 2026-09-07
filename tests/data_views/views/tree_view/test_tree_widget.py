@@ -4,12 +4,12 @@ Tests cover TreePlot data display, node selection, keyboard shortcuts,
 mode switching, and integration with TracksViewer.
 """
 
+import gc
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
-from funtracks.data_model import SolutionTracks
-from PyQt6.QtCore import QRectF
 from qtpy.QtCore import Qt
 
 from motile_tracker.data_views.views.tree_view.navigation_widget import (
@@ -19,21 +19,28 @@ from motile_tracker.data_views.views.tree_view.tree_widget import TreeWidget
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
-def test_tree_plot_initialization_and_update(make_napari_viewer, graph_2d):
+@pytest.fixture(autouse=True)
+def clear_viewer_layers(viewer):
+    """Clear viewer layers between tests."""
+    yield
+    viewer.layers.clear()
+
+
+def test_tree_plot_initialization_and_update(viewer, solution_tracks_2d):
     """Test TreePlot initialization, signals, and update method."""
     # Need napari viewer context for Qt initialization
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget = TreeWidget(viewer)
     tree_plot = tree_widget.tree_widget
 
     # Test 1: Initialization
     assert tree_plot is not None
-    # After loading data, adj contains edge data as numpy array
-    assert len(tree_plot.adj) > 0  # Should have edges from graph_2d
+    # after loading data the scatter + edges exist and positions are populated
+    assert tree_plot._scatter is not None
+    assert len(tree_plot._positions) > 0
+    assert tree_plot._edges is not None  # edges from graph_2d
     assert tree_plot.view_direction == "vertical"
 
     # Test 2: Signals
@@ -42,7 +49,7 @@ def test_tree_plot_initialization_and_update(make_napari_viewer, graph_2d):
     assert hasattr(tree_plot, "nodes_selected")
 
     # Test 3: Update with all parameters
-    track_df = tree_widget.track_df
+    track_df = tree_widget.tracks_viewer.track_df
     tree_widget.tree_widget.update(
         track_df=track_df,
         view_direction="horizontal",
@@ -55,31 +62,28 @@ def test_tree_plot_initialization_and_update(make_napari_viewer, graph_2d):
     assert tree_widget.tree_widget.view_direction == "horizontal"
 
 
-def test_tree_plot_data_display(make_napari_viewer, graph_2d):
+def test_tree_plot_data_display(viewer, solution_tracks_2d):
     """Test TreePlot data display with empty data, track data, and view directions."""
-    viewer = make_napari_viewer()
     tree_widget = TreeWidget(viewer)
     tree_plot = tree_widget.tree_widget
 
-    # Test 1: Empty DataFrame
+    # Test 1: Empty DataFrame -> nothing rendered
     empty_df = pd.DataFrame()
-    tree_plot.set_data(empty_df, "tree", None)
-    assert tree_plot._pos == []
-    assert tree_plot.adj == []
-    assert tree_plot.node_ids == []
+    tree_plot.update(empty_df, "vertical", "tree", None, [])
+    assert tree_plot._scatter is None
+    assert len(tree_plot._node_ids) == 0
 
     # Test 2: Actual track data
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     # Create new tree_widget after loading data
     tree_widget = TreeWidget(viewer)
     tree_plot = tree_widget.tree_widget
 
     # Verify data was loaded
-    assert len(tree_plot._pos) > 0
-    assert len(tree_plot.node_ids) > 0
+    assert len(tree_plot._positions) > 0
+    assert len(tree_plot._node_ids) > 0
 
     # Test 3: Vertical view direction
     tree_plot.set_view("vertical", "tree")
@@ -90,121 +94,119 @@ def test_tree_plot_data_display(make_napari_viewer, graph_2d):
     assert tree_plot.view_direction == "horizontal"
 
 
-def test_tree_plot_selection(make_napari_viewer, qtbot):
-    """Test selection with empty list and rectangle selection signal."""
-    viewer = make_napari_viewer()
+def test_tree_plot_selection(viewer, solution_tracks_2d):
+    """Test set_selection with empty list and rectangle (box) selection signal."""
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+
     tree_widget = TreeWidget(viewer)
     tree_plot = tree_widget.tree_widget
 
-    # Test 1: Setting selection with empty list
-    empty_df = pd.DataFrame()
-    tree_plot.track_df = empty_df
-
-    # Should not raise an error
+    # Test 1: setting selection with an empty list should not raise
     tree_plot.set_selection([], "tree")
 
-    # Test 2: Rectangle selection emits signal
-    with qtbot.waitSignal(tree_plot.nodes_selected, timeout=1000) as blocker:
-        # Create a dummy rectangle and emit selection
-        rect = QRectF(0, 0, 100, 100)
-        tree_plot.select_points_in_rect(rect)
+    # Test 2: a box-select covering all nodes emits nodes_selected with those ids.
+    # (select_points_in_rect takes x0, x1, y0, y1 and only emits when non-empty;
+    # it emits synchronously, so a direct connect capture is enough.)
+    received = []
+    tree_plot.nodes_selected.connect(lambda nodes, append: received.append(nodes))
+    xs, ys = tree_plot._positions[:, 0], tree_plot._positions[:, 1]
+    tree_plot.select_points_in_rect(
+        xs.min() - 1, xs.max() + 1, ys.min() - 1, ys.max() + 1
+    )
+    assert received, "nodes_selected should have been emitted for a covering box"
+    assert len(received[0]) == len(tree_plot._node_ids)
 
-    # Signal should have been emitted (even if with empty list)
-    assert blocker.signal_triggered
 
-
-def test_centering(make_napari_viewer, graph_2d):
-    """Test centering on nodes with various scenarios."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
+def test_centering(viewer, solution_tracks_2d):
+    """Test centering on nodes via the fastplotlib camera."""
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget = TreeWidget(viewer)
     tree_plot = tree_widget.tree_widget
+    cam = tree_plot._subplot.camera
 
-    # Test 1: Try to center on a node that doesn't exist - should not raise an error
-    tree_widget.tree_widget.center_on_node(999)
+    def node_pos(node_id):
+        row = tree_plot._id_to_row[node_id]
+        return tree_plot._positions[row, 0], tree_plot._positions[row, 1]
 
-    # Test 2: Center on existing node and verify it's in view
-    node_id = 1
-    node_df = tree_plot.track_df.loc[tree_plot.track_df["node_id"] == node_id]
-    assert not node_df.empty, "Node should exist in track_df"
+    def in_view(x, y):
+        st = cam.get_state()
+        cx, cy = st["position"][0], st["position"][1]
+        w, h = st["width"], st["height"]
+        return (cx - w / 2 <= x <= cx + w / 2) and (cy - h / 2 <= y <= cy + h / 2)
 
-    node_x = tree_plot.track_df.loc[
-        tree_plot.track_df["node_id"] == node_id, "x_axis_pos"
-    ].values[0]
-    node_t = tree_plot.track_df.loc[
-        tree_plot.track_df["node_id"] == node_id, "t"
-    ].values[0]
+    # Test 1: centering on a node that doesn't exist should not raise
+    tree_plot.center_on_node(999)
 
-    # Set view range to exclude the node (far away from node position)
-    view_box = tree_plot.plotItem.getViewBox()
-    view_box.setRange(
-        xRange=(node_x + 100, node_x + 200),
-        yRange=(node_t + 100, node_t + 200),
-        padding=0,
-    )
+    # Test 2: move the camera far from a node, then center -> it comes into view
+    node_x, node_y = node_pos(1)
+    st = dict(cam.get_state())
+    st["position"] = (node_x + 1000, node_y + 1000, st["position"][2])
+    st["width"], st["height"] = 10, 10
+    cam.set_state(st)
+    assert not in_view(node_x, node_y), "node should start outside the view"
 
-    # Verify node is not in current view
-    current_range = view_box.viewRange()
-    assert not (
-        current_range[0][0] <= node_x <= current_range[0][1]
-        and current_range[1][0] <= node_t <= current_range[1][1]
-    ), "Node should not be in initial view range"
-
-    # Center on the node
-    tree_plot.center_on_node(node_id)
-
-    # Verify the view range now includes the node
-    new_range = view_box.viewRange()
-    assert (
-        new_range[0][0] <= node_x <= new_range[0][1]
-        and new_range[1][0] <= node_t <= new_range[1][1]
-    ), "Node should be centered in view after center_on_node call"
-
-    # Test 3: _center_view early return when point is already in view
-    # First, center on a node to set up the view
     tree_plot.center_on_node(1)
+    assert in_view(node_x, node_y), "node should be in view after center_on_node"
 
-    # Get current view range
-    view_box = tree_plot.plotItem.getViewBox()
-    current_range = view_box.viewRange()
+    # Test 3: centering again is a no-op when the node is already in view
+    before = tuple(cam.get_state()["position"])
+    tree_plot.center_on_node(1)
+    after = tuple(cam.get_state()["position"])
+    assert before == after, "camera should not move when node is already visible"
 
-    # Try to center on same location - should not change view
-    center_x = (current_range[0][0] + current_range[0][1]) / 2
-    center_y = (current_range[1][0] + current_range[1][1]) / 2
-
-    # Verify setRange is not called when point is already in view
-    with patch.object(view_box, "setRange", wraps=view_box.setRange) as spy_set_range:
-        tree_plot._center_view(center_x, center_y)
-        spy_set_range.assert_not_called()
-
-    # Test 4: _center_range early return when range is already in view
-    # Get current view range
-    current_range = view_box.viewRange()
-
-    # Center on a range that's already visible
-    min_x = current_range[0][0] + 1
-    max_x = current_range[0][1] - 1
-    min_t = current_range[1][0] + 1
-    max_t = current_range[1][1] - 1
-
-    # Verify setRange is not called when range is already in view
-    with patch.object(view_box, "setRange", wraps=view_box.setRange) as spy_set_range:
-        tree_plot._center_range(min_x, max_x, min_t, max_t)
-        spy_set_range.assert_not_called()
-
-    # Test 5: set_selection centers on range for multiple nodes
-    # Select multiple nodes
+    # Test 4: selecting multiple nodes centers on their range without error
     tree_plot.set_selection([1, 2, 3], "tree")
 
-    # Should have updated sizes and outlines without error
+
+def test_adding_a_visible_node_to_the_selection_keeps_the_zoom(
+    viewer, solution_tracks_2d
+):
+    """Shift-clicking a node that is already on screen must not reframe the view.
+
+    Picking a run of nodes by hand means adding them one by one while zoomed in; if
+    every addition zoomed out far enough to also fit the nodes selected earlier (which
+    may have been panned off screen since), the user would have to zoom back in for
+    each click. A selection that lands off screen must still be brought into view.
+    """
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+
+    tree_widget = TreeWidget(viewer)
+    tree_plot = tree_widget.tree_widget
+    cam = tree_plot._subplot.camera
+
+    node_ids = [int(n) for n in tree_plot._node_ids]
+    rows = tree_plot._positions
+
+    # zoom in tightly on the first node, with a second node just inside the view
+    first, second = node_ids[0], node_ids[1]
+    tree_plot.set_selection([first], "tree")
+    pts = rows[[tree_plot._id_to_row[first], tree_plot._id_to_row[second]]]
+    st = dict(cam.get_state())
+    st["position"] = (pts[:, 0].mean(), pts[:, 1].mean(), st["position"][2])
+    st["width"] = max(1.0, (np.ptp(pts[:, 0]) + 1) * 1.5)
+    st["height"] = max(1.0, (np.ptp(pts[:, 1]) + 1) * 1.5)
+    cam.set_state(st)
+    before = cam.get_state()
+
+    tree_plot.set_selection([first, second], "tree")
+    after = cam.get_state()
+    assert tuple(after["position"]) == tuple(before["position"])
+    assert (after["width"], after["height"]) == (before["width"], before["height"])
+
+    # ...but a node outside the view (e.g. the far end of a broken edge) still pulls
+    # the camera out far enough to show it
+    far = max(node_ids, key=lambda n: abs(rows[tree_plot._id_to_row[n], 1]))
+    if not tree_plot._rows_fit([tree_plot._id_to_row[far]]):
+        tree_plot.set_selection([first, far], "tree")
+        assert cam.get_state()["height"] > before["height"]
 
 
-def test_tree_widget_initialization(make_napari_viewer, graph_2d):
+def test_tree_widget_initialization(viewer, solution_tracks_2d):
     """Test TreeWidget initialization without and with tracks."""
-    viewer = make_napari_viewer()
 
     # Test 1: Basic initialization
     tree_widget = TreeWidget(viewer)
@@ -220,23 +222,20 @@ def test_tree_widget_initialization(make_napari_viewer, graph_2d):
     assert hasattr(tree_widget, "flip_widget")
 
     # Test 2: Initialization with tracks loaded
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget_with_tracks = TreeWidget(viewer)
 
-    assert not tree_widget_with_tracks.track_df.empty
+    assert not tree_widget_with_tracks.tracks_viewer.track_df.empty
     assert tree_widget_with_tracks.graph is not None
 
 
 @patch.object(NavigationWidget, "move")
-def test_keyboard_shortcuts_all(mock_move, make_napari_viewer, graph_2d, qtbot):
+def test_keyboard_shortcuts_all(mock_move, viewer, solution_tracks_2d, qtbot):
     """Test all keyboard shortcuts including standard keys, releases, arrows, and toggles."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     # Mock all methods
     delete_mock = MagicMock()
@@ -332,12 +331,10 @@ def test_keyboard_shortcuts_all(mock_move, make_napari_viewer, graph_2d, qtbot):
     restore_mock.assert_called_once()
 
 
-def test_mode_and_plot_type_switching(make_napari_viewer, graph_2d):
+def test_mode_and_plot_type_switching(viewer, solution_tracks_2d, click_node):
     """Test mode switching, plot type switching, and their interaction."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget = TreeWidget(viewer)
 
@@ -346,8 +343,8 @@ def test_mode_and_plot_type_switching(make_napari_viewer, graph_2d):
     assert tree_widget.mode == "all"
 
     # Test 2: Setting mode to 'lineage'
-    # Select a node first
-    tracks_viewer.selected_nodes = [1]
+    # Select a node first (use click_node so the ID is np.int64, matching the real UI)
+    click_node(tracks_viewer, 1)
     tree_widget._set_mode("lineage")
     assert tree_widget.mode == "lineage"
     assert tree_widget.view_direction == "horizontal"
@@ -381,54 +378,51 @@ def test_mode_and_plot_type_switching(make_napari_viewer, graph_2d):
     assert tree_widget.view_direction == "horizontal"
 
 
-def test_lineage_mode_edge_cases(make_napari_viewer, graph_2d):
+def test_lineage_mode_edge_cases(viewer, solution_tracks_2d, click_node):
     """Test lineage mode edge cases with selection changes."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget = TreeWidget(viewer)
 
     # Test 1: _update_selected in lineage mode doesn't crash
-    # Switch to lineage mode with a selection
-    tracks_viewer.selected_nodes.add_list([1], append=False)
+    # Switch to lineage mode with a selection (use click_node so the ID is np.int64,
+    # matching the real UI path that produces np.int64 from layer.get_value())
+    click_node(tracks_viewer, 1)
     tree_widget._set_mode("lineage")
 
     # Change selection to a node not in current lineage
-    tracks_viewer.selected_nodes.add_list([2], append=False)
+    click_node(tracks_viewer, 2)
 
     # _update_selected should handle this without crashing
     tree_widget._update_selected()
 
     # Test 2: _update_lineage_df doesn't crash with empty selection
     # Select node and switch to lineage mode
-    tracks_viewer.selected_nodes = [1]
+    click_node(tracks_viewer, 1)
     tree_widget._set_mode("lineage")
 
     # Clear selection but lineage_df still has data
-    tracks_viewer.selected_nodes.clear()
+    tracks_viewer.selected_nodes.reset()
 
     # This should not crash
     tree_widget._update_lineage_df()
     # Test passes if we reach here without exception
 
 
-def test_tree_widget_integration(make_napari_viewer, graph_2d):
+def test_tree_widget_integration(viewer, solution_tracks_2d):
     """Test TreeWidget signal response, axis flipping, and mouse controls."""
-    viewer = make_napari_viewer()
     tracks_viewer = TracksViewer.get_instance(viewer)
 
     # Test 1: TreeWidget responds to tracks_updated signal
     tree_widget = TreeWidget(viewer)
-    assert tree_widget.track_df.empty
+    assert tree_widget.tracks_viewer.track_df.empty
 
     # Update tracks
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     # Verify track_df was updated
-    assert not tree_widget.track_df.empty
+    assert not tree_widget.tracks_viewer.track_df.empty
 
     # Test 2: flip_axes toggles between horizontal and vertical
     # Start with vertical
@@ -448,12 +442,10 @@ def test_tree_widget_integration(make_napari_viewer, graph_2d):
     tree_widget.set_mouse_enabled(x=True, y=True)
 
 
-def test_update_track_data_without_reset(make_napari_viewer, graph_2d):
+def test_update_track_data_without_reset(viewer, solution_tracks_2d):
     """Test _update_track_data preserves axis_order when reset_view=False."""
-    viewer = make_napari_viewer()
-    tracks = SolutionTracks(graph=graph_2d, ndim=3)
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
 
     tree_widget = TreeWidget(viewer)
 
@@ -461,16 +453,72 @@ def test_update_track_data_without_reset(make_napari_viewer, graph_2d):
     tree_widget._update_track_data(reset_view=False)
 
     # axis_order should have been passed through
-    assert hasattr(tree_widget, "axis_order")
+    assert hasattr(tree_widget.tracks_viewer, "axis_order")
 
 
-def test_update_track_data_with_none_tracks(make_napari_viewer):
+def test_update_track_data_with_none_tracks(viewer):
     """Test _update_track_data handles None tracks."""
-    viewer = make_napari_viewer()
     tree_widget = TreeWidget(viewer)
 
     # Update with no tracks
     tree_widget._update_track_data(reset_view=True)
 
-    assert tree_widget.track_df.empty
+    assert tree_widget.tracks_viewer.track_df.empty
     assert tree_widget.graph is None
+
+
+def _render_canvas_of(tree_widget):
+    """The QRenderWidget that rendercanvas registers for this tree view."""
+    figure_canvas = tree_widget.tree_widget._figure.canvas
+    return getattr(figure_canvas, "_subwidget", figure_canvas)
+
+
+def test_cleanup_releases_canvas(viewer, solution_tracks_2d):
+    """cleanup() closes the wgpu canvas and releases the graphics it was drawing."""
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+
+    tree_widget = TreeWidget(viewer)
+    canvas = _render_canvas_of(tree_widget)
+    assert not canvas.get_closed()
+    assert tree_widget.tree_widget._scatter is not None
+
+    tree_widget.cleanup()
+
+    assert tree_widget.tree_widget._closed
+    assert canvas.get_closed()
+    assert tree_widget.tree_widget._scatter is None  # GPU buffers released
+
+    tree_widget.cleanup()  # idempotent
+    # a closed tree view ignores further updates instead of touching a dead canvas
+    tree_widget.tree_widget.update(
+        tracks_viewer.track_df, "vertical", "tree", None, [], reset_view=True
+    )
+    tree_widget.tree_widget.set_selection([], "tree")
+    tree_widget.tree_widget.center_on_node(1)
+
+
+def test_deleted_tree_widget_leaves_no_dangling_canvas(viewer):
+    """A destroyed tree view must not leave a canvas behind in rendercanvas.
+
+    rendercanvas only drops a canvas from its registry when that canvas reports itself
+    closed, and the nested QRenderWidget never receives a Qt close event. Its Python
+    wrapper then outlives the deleted C++ widget, and rendercanvas' loop trips over it
+    at application exit with "wrapped C/C++ object of type QRenderWidget has been
+    deleted".
+    """
+    from rendercanvas.qt import loop
+
+    tree_widget = TreeWidget(viewer)
+    canvas = _render_canvas_of(tree_widget)
+    assert canvas in canvas._rc_canvas_group._canvases
+
+    del tree_widget
+    gc.collect()
+
+    assert canvas.get_closed()
+    # this is what the loop does on QApplication.aboutToQuit
+    remaining = loop.get_canvases(close_closed=True)
+    assert canvas not in remaining
+    for remaining_canvas in remaining:
+        getattr(remaining_canvas, "_rc_closed_by_loop", False)

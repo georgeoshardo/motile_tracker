@@ -9,13 +9,19 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from funtracks.data_model import SolutionTracks
 from qtpy.QtWidgets import QMessageBox
 
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 from motile_tracker.data_views.views_coordinator.user_dialogs import (
     confirm_force_operation,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_viewer_layers(viewer):
+    """Clear viewer layers between tests."""
+    yield
+    viewer.layers.clear()
 
 
 class MockEvent:
@@ -107,9 +113,8 @@ def test_confirm_force_operation_all_buttons(
     ],
 )
 def test_on_paint_invalid_action_upstream_division1_forceable(
-    make_napari_viewer,
-    graph_3d_with_division,
-    segmentation_3d_boxes,
+    viewer,
+    solution_tracks_3d_with_division,
     monkeypatch,
     confirm_response,
     expect_force_retry,
@@ -134,12 +139,8 @@ def test_on_paint_invalid_action_upstream_division1_forceable(
 
     """
 
-    viewer = make_napari_viewer()
-
     # Create example tracks
-    tracks = SolutionTracks(
-        graph=graph_3d_with_division, segmentation=segmentation_3d_boxes, ndim=4
-    )
+    tracks = solution_tracks_3d_with_division
     tracks_viewer = TracksViewer.get_instance(viewer)
     tracks_viewer.update_tracks(tracks=tracks, name="test")
 
@@ -159,7 +160,7 @@ def test_on_paint_invalid_action_upstream_division1_forceable(
     event = MockEvent(event_val)
 
     seg_layer = tracks_viewer.tracking_layers.seg_layer
-    initial_node_count = len(tracks.graph.nodes)
+    initial_node_count = tracks.graph.num_nodes()
 
     # Mock the confirm_force_operation dialog
     monkeypatch.setattr(
@@ -176,18 +177,18 @@ def test_on_paint_invalid_action_upstream_division1_forceable(
 
     # Set selected_label to a value not in the graph so _ensure_valid_label does not
     # override selected_track (track_id=3 is the track of node 4 at t=2).
-    seg_layer.selected_label = max(tracks.graph.nodes) + 1  # = 5
+    seg_layer.selected_label = max(tracks.graph.node_ids()) + 1  # = 5
 
     seg_layer._on_paint(event)
 
     # Verify graph state based on user's choice
     if expect_force_retry:
         # Force retry succeeded: node 5 added
-        assert len(tracks.graph.nodes) == initial_node_count + 1
+        assert tracks.graph.num_nodes() == initial_node_count + 1
         assert seg_layer.tracks_viewer.force == confirm_response[1]
     else:
         # User declined force: graph unchanged
-        assert len(tracks.graph.nodes) == initial_node_count
+        assert tracks.graph.num_nodes() == initial_node_count
     # In both error paths: super().undo() is called before force retry or decline;
     # _refresh is called (via tracks.refresh signal after success, or explicitly on decline)
     undo_mock.assert_called_once()
@@ -200,13 +201,15 @@ def test_on_paint_invalid_action_upstream_division1_forceable(
 
     # Control condition: no track selected → new track, no division conflict
     tracks_viewer.selected_track = None
-    node_count_before_section2 = len(tracks.graph.nodes)
-    seg_layer.selected_label = max(tracks.graph.nodes) + 1  # fresh label not in graph
+    node_count_before_section2 = tracks.graph.num_nodes()
+    seg_layer.selected_label = (
+        max(tracks.graph.node_ids()) + 1
+    )  # fresh label not in graph
 
     seg_layer._on_paint(event)
 
     # No error branch triggered: node was added successfully via tracks.refresh signal
-    assert len(tracks.graph.nodes) == node_count_before_section2 + 1
+    assert tracks.graph.num_nodes() == node_count_before_section2 + 1
     undo_mock.assert_not_called()
     seg_layer._refresh.assert_called_once()
 
@@ -220,9 +223,8 @@ def test_on_paint_invalid_action_upstream_division1_forceable(
     ],
 )
 def test_on_paint_invalid_action_upstream_division2_forceable(
-    make_napari_viewer,
-    graph_3d_with_division,
-    segmentation_3d_boxes,
+    viewer,
+    solution_tracks_3d_with_division,
     monkeypatch,
     confirm_response,
     expect_force_retry,
@@ -243,12 +245,8 @@ def test_on_paint_invalid_action_upstream_division2_forceable(
 
     """
 
-    viewer = make_napari_viewer()
-
     # Create example tracks
-    tracks = SolutionTracks(
-        graph=graph_3d_with_division, segmentation=segmentation_3d_boxes, ndim=4
-    )
+    tracks = solution_tracks_3d_with_division
     tracks_viewer = TracksViewer.get_instance(viewer)
     tracks_viewer.update_tracks(tracks=tracks, name="test")
 
@@ -268,7 +266,7 @@ def test_on_paint_invalid_action_upstream_division2_forceable(
     event = MockEvent(event_val)
 
     seg_layer = tracks_viewer.tracking_layers.seg_layer
-    initial_node_count = len(tracks.graph.nodes)
+    initial_node_count = tracks.graph.num_nodes()
 
     # Mock the confirm_force_operation dialog
     monkeypatch.setattr(
@@ -285,18 +283,18 @@ def test_on_paint_invalid_action_upstream_division2_forceable(
 
     # Set selected_label to a value not in the graph so _ensure_valid_label does not
     # override selected_track (track_id=1 is the track of nodes 1 and 2).
-    seg_layer.selected_label = max(tracks.graph.nodes) + 1  # = 5
+    seg_layer.selected_label = max(tracks.graph.node_ids()) + 1  # = 5
 
     seg_layer._on_paint(event)
 
     # Verify graph state based on user's choice
     if expect_force_retry:
         # Force retry succeeded: node 5 added
-        assert len(tracks.graph.nodes) == initial_node_count + 1
+        assert tracks.graph.num_nodes() == initial_node_count + 1
         assert seg_layer.tracks_viewer.force == confirm_response[1]
     else:
         # User declined force: graph unchanged
-        assert len(tracks.graph.nodes) == initial_node_count
+        assert tracks.graph.num_nodes() == initial_node_count
     # In both error paths: super().undo() is called before force retry or decline;
     # _refresh is called (via tracks.refresh signal after success, or explicitly on decline)
     undo_mock.assert_called_once()
@@ -309,13 +307,15 @@ def test_on_paint_invalid_action_upstream_division2_forceable(
 
     # Control condition: no track selected → new track, no division conflict
     tracks_viewer.selected_track = None
-    node_count_before_section2 = len(tracks.graph.nodes)
-    seg_layer.selected_label = max(tracks.graph.nodes) + 1  # fresh label not in graph
+    node_count_before_section2 = tracks.graph.num_nodes()
+    seg_layer.selected_label = (
+        max(tracks.graph.node_ids()) + 1
+    )  # fresh label not in graph
 
     seg_layer._on_paint(event)
 
     # No error branch triggered: node was added successfully via tracks.refresh signal
-    assert len(tracks.graph.nodes) == node_count_before_section2 + 1
+    assert tracks.graph.num_nodes() == node_count_before_section2 + 1
     undo_mock.assert_not_called()
     seg_layer._refresh.assert_called_once()
 
@@ -329,12 +329,12 @@ def test_on_paint_invalid_action_upstream_division2_forceable(
     ],
 )
 def test_invalid_edge_force(
-    make_napari_viewer,
-    graph_3d_with_division,
-    segmentation_3d_boxes,
+    viewer,
+    solution_tracks_3d_with_division,
     monkeypatch,
     confirm_response,
     expect_force_retry,
+    click_node,
 ):
     r"""Test paint event processing
 
@@ -352,14 +352,9 @@ def test_invalid_edge_force(
 
     """
 
-    viewer = make_napari_viewer()
-
     # Create example tracks
-    tracks = SolutionTracks(
-        graph=graph_3d_with_division, segmentation=segmentation_3d_boxes, ndim=4
-    )
     tracks_viewer = TracksViewer.get_instance(viewer)
-    tracks_viewer.update_tracks(tracks=tracks, name="test")
+    tracks_viewer.update_tracks(tracks=solution_tracks_3d_with_division, name="test")
 
     ### 1) Simulate paint event with new label
     tracks_viewer.tracking_layers.seg_layer.mode = "paint"
@@ -375,14 +370,18 @@ def test_invalid_edge_force(
         tp=1, z=(15, 17), y=(45, 47), x=(75, 78), old_val=0, target_val=5
     )
     event = MockEvent(event_val)
-    assert len(tracks_viewer.tracks.graph.nodes) == 4  # 4 nodes before the paint event
+    assert tracks_viewer.tracks.graph.num_nodes() == 4  # 4 nodes before the paint event
     tracks_viewer.tracking_layers.seg_layer._on_paint(event)
-    assert len(tracks_viewer.tracks.graph.nodes) == 5  # 5 nodes after the paint event
+    assert tracks_viewer.tracks.graph.num_nodes() == 5  # 5 nodes after the paint event
 
     ### 2) Add an invalid edge and verify that the dialog was called
     # Node 4 already has an incoming edge from node 2, so adding 5→4 raises
     # InvalidActionError(forceable=True) without any mocking needed.
-    tracks_viewer.selected_nodes = [5, 4]
+    # Reset selection first: the paint auto-selected node 5, so clicking it
+    # again would toggle it off via NodeSelectionList's toggle behavior.
+    tracks_viewer.selected_nodes.reset()
+    click_node(tracks_viewer, 5)
+    click_node(tracks_viewer, 4, append=True)
     tracks_viewer.force = False
 
     monkeypatch.setattr(
@@ -393,9 +392,67 @@ def test_invalid_edge_force(
     tracks_viewer.create_edge()
 
     if expect_force_retry:
-        assert tracks.graph.has_edge(5, 4)
-        assert not tracks.graph.has_edge(2, 4)
+        assert solution_tracks_3d_with_division.graph.has_edge(5, 4)
+        assert not solution_tracks_3d_with_division.graph.has_edge(2, 4)
     else:
-        assert not tracks.graph.has_edge(5, 4)
-        assert tracks.graph.has_edge(2, 4)
+        assert not solution_tracks_3d_with_division.graph.has_edge(5, 4)
+        assert solution_tracks_3d_with_division.graph.has_edge(2, 4)
     assert tracks_viewer.force == confirm_response[1]
+
+
+def test_create_edge_third_daughter_blocked(
+    viewer,
+    solution_tracks_3d_with_division,
+    monkeypatch,
+    click_node,
+):
+    r"""Adding a third daughter to a parent that already has 2 children
+    should pop up a QMessageBox.warning and not call funtracks.
+
+    TP
+    0      1                       1
+           |                       |
+    1      2          ->           2          (5 painted at t=2 as new track)
+          / \                     / \
+    2    3   4                   3   4    5
+
+    Selecting 2 (parent, out_degree=2) and 5 and pressing "Add edge" should
+    show a popup and leave the graph unchanged — funtracks is never called,
+    so the merge-then-fail partial-mutation path is unreachable.
+    """
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_3d_with_division, name="test")
+
+    # Paint a new disconnected node 5 at t=2 (new track_id)
+    tracks_viewer.tracking_layers.seg_layer.mode = "paint"
+    step = list(viewer.dims.current_step)
+    step[0] = 2
+    viewer.dims.current_step = step
+    tracks_viewer.selected_track = None
+
+    event_val = create_event_val(
+        tp=2, z=(15, 17), y=(45, 47), x=(75, 78), old_val=0, target_val=5
+    )
+    tracks_viewer.tracking_layers.seg_layer._on_paint(MockEvent(event_val))
+    assert tracks_viewer.tracks.graph.num_nodes() == 5
+    assert tracks_viewer.tracks.graph.out_degree(2) == 2
+
+    # Select parent (2) and would-be third daughter (5)
+    tracks_viewer.selected_nodes.reset()
+    click_node(tracks_viewer, 2)
+    click_node(tracks_viewer, 5, append=True)
+
+    warning_mock = MagicMock(return_value=QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", warning_mock)
+
+    num_edges_before = tracks_viewer.tracks.graph.num_edges()
+
+    tracks_viewer.create_edge()
+
+    warning_mock.assert_called_once()
+    assert "Cannot add edge" in warning_mock.call_args.args[1]
+    assert tracks_viewer.tracks.graph.num_edges() == num_edges_before
+    assert not tracks_viewer.tracks.graph.has_edge(2, 5)
+    # Existing daughter edges are still intact
+    assert tracks_viewer.tracks.graph.has_edge(2, 3)
+    assert tracks_viewer.tracks.graph.has_edge(2, 4)

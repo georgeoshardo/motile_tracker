@@ -7,8 +7,8 @@ from warnings import warn
 
 import dask.array as da
 import napari.layers
-import networkx as nx
 import numpy as np
+from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QComboBox,
@@ -23,8 +23,7 @@ from qtpy.QtWidgets import (
 )
 from tqdm import tqdm
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-from motile_tracker.motile.backend import MotileRun
+from motile_tracker.motile.backend import MotileRun, get_solver_name
 
 from .params_editor import SolverParamsEditor
 
@@ -54,7 +53,7 @@ class RunEditor(QGroupBox):
         self._editing_run: MotileRun | None = None
 
         # Generate Tracks button
-        generate_tracks_btn = QPushButton("Run Tracking")
+        generate_tracks_btn = QPushButton(f"Run Tracking ({get_solver_name()})")
         generate_tracks_btn.clicked.connect(self.emit_run)
         generate_tracks_btn.setToolTip(
             "Might take minutes or longer for larger samples."
@@ -145,21 +144,32 @@ class RunEditor(QGroupBox):
         return layer
 
     def _is_kymograph_derived_layer(self, layer: napari.layers.Layer) -> bool:
-        tracks_viewer = TracksViewer.get_instance(self.viewer)
-        return layer in {
-            tracks_viewer.kymograph_layers.labels_layer,
-            tracks_viewer.kymograph_layers.points_layer,
-        }
+        """Return True if the layer is one of the kymograph view layers, which are
+        derived from the tracks being viewed and are never a valid tracking input."""
+        # Imported lazily to avoid an import cycle between the motile menus and the
+        # data views.
+        from motile_tracker.data_views.views_coordinator.tracks_viewer import (
+            TracksViewer,
+        )
+
+        tracks_viewer = getattr(TracksViewer, "_instance", None)
+        if tracks_viewer is None or tracks_viewer.viewer is not self.viewer:
+            return False
+        kymograph_layers = tracks_viewer.kymograph_layers
+        return layer in {kymograph_layers.labels_layer, kymograph_layers.points_layer}
 
     def _input_from_layer(
-        self,
-        input_layer: napari.layers.Layer,
-    ) -> tuple[np.ndarray | None, np.ndarray | None, tuple[float, ...]]:
+        self, input_layer: napari.layers.Layer
+    ) -> tuple[np.ndarray | None, np.ndarray | None, list[float] | np.ndarray]:
+        """Extract (segmentation, points, scale) from a Labels or Points input layer."""
         if isinstance(input_layer, napari.layers.Labels):
-            if isinstance(input_layer.data, da.core.Array):
-                input_seg = self._convert_da_to_np_array(input_layer.data)
+            data = input_layer.data[0] if input_layer.multiscale else input_layer.data
+            if isinstance(data, da.core.Array):
+                input_seg = self._convert_da_to_np_array(
+                    data
+                )  # silently convert to in-memory array
             else:
-                input_seg = input_layer.data
+                input_seg = np.asarray(data)
             ndim = input_seg.ndim
             if ndim > 4:
                 raise ValueError(
@@ -169,16 +179,15 @@ class RunEditor(QGroupBox):
                 raise ValueError(
                     "Expected segmentation to be at least 3D, found %d", ndim
                 )
-            return input_seg, None, tuple(input_layer.scale)
-
-        input_points = input_layer.data
-        return None, input_points, tuple(input_layer.scale)
+            return input_seg, None, input_layer.scale
+        return None, input_layer.data, input_layer.scale
 
     def _input_from_existing_run(
-        self,
-        run: MotileRun,
-    ) -> tuple[np.ndarray | None, np.ndarray | None, tuple[float, ...]]:
-        return run.segmentation, run.input_points, tuple(run.scale)
+        self, run: MotileRun
+    ) -> tuple[np.ndarray | None, np.ndarray | None, list[float] | np.ndarray]:
+        """Re-use the inputs of a previous run (used when its input layers are not
+        available in the viewer, e.g. because they are detached in kymograph mode)."""
+        return run.input_segmentation, run.input_points, run.scale
 
     def _run_widget(self) -> QWidget:
         """Construct a widget where you set the run name and start solving.
@@ -213,6 +222,8 @@ class RunEditor(QGroupBox):
         if input_layer is not None:
             input_seg, input_points, scale = self._input_from_layer(input_layer)
         elif self._editing_run is not None:
+            # No selectable input layer (e.g. the input layers are detached while the
+            # viewer is in kymograph mode): re-use the inputs of the run being edited.
             input_seg, input_points, scale = self._input_from_existing_run(
                 self._editing_run
             )
@@ -221,8 +232,8 @@ class RunEditor(QGroupBox):
             return None
         params = self.solver_params_widget.solver_params.copy()
         return MotileRun(
-            graph=nx.DiGraph(),
-            segmentation=input_seg,
+            graph=create_empty_graphview_graph(),
+            input_segmentation=input_seg,
             run_name=run_name,
             solver_params=params,
             input_points=input_points,
@@ -259,8 +270,11 @@ class RunEditor(QGroupBox):
 
     def new_run(self, run: MotileRun) -> None:
         """Configure the run editor to copy the name and params of the given
-        run.
+        run. A run loaded from a directory with no params file has no
+        solver_params — leave the editor at its current values rather than
+        emitting None.
         """
         self._editing_run = run
         self.run_name.setText(run.run_name)
-        self.solver_params_widget.new_params.emit(run.solver_params)
+        if run.solver_params is not None:
+            self.solver_params_widget.new_params.emit(run.solver_params)
