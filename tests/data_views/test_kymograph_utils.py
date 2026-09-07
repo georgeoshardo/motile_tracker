@@ -149,14 +149,30 @@ def test_build_kymograph_link_data_classifies_continuations_and_branches(
 
     assert isinstance(continuation, KymographLinkRenderData)
     assert isinstance(branch, KymographLinkRenderData)
-    # 3->4 is the only edge between consecutive frames within one track; 4->5 skips
-    # a frame and is therefore not drawn as a path
-    assert len(continuation.segments) == 1
-    assert list(continuation.properties["source_node"]) == [3]
-    assert list(continuation.properties["target_node"]) == [4]
-    assert list(continuation.properties["track_id"]) == [
-        solution_tracks_2d.get_track_id(3)
-    ]
+    # 3->4 joins consecutive frames within one track: one solid path segment. 4->5
+    # skips a frame and is drawn as a dashed "gap" link (several fragments sharing
+    # one logical link id) in the same track colour, spanning the skipped frame.
+    kinds = continuation.properties["link_kind"]
+    solid = kinds == "continuation"
+    gap = kinds == "gap"
+    assert solid.sum() == 1
+    assert list(continuation.properties["source_node"][solid]) == [3]
+    assert list(continuation.properties["target_node"][solid]) == [4]
+    assert gap.sum() > 1
+    assert set(continuation.properties["source_node"][gap]) == {4}
+    assert set(continuation.properties["target_node"][gap]) == {5}
+    assert len(np.unique(continuation.properties["logical_link_id"][gap])) == 1
+    assert len(continuation.segments) == solid.sum() + gap.sum()
+    track_id = solution_tracks_2d.get_track_id(3)
+    assert set(continuation.properties["track_id"]) == {track_id}
+    for color in continuation.edge_colors:
+        np.testing.assert_array_equal(color, _red_by_track(track_id))
+    # the gap fragments run from node 4 (t=2) to node 5 (t=4), across frame 3
+    gap_segments = np.concatenate(
+        [seg for seg, is_gap in zip(continuation.segments, gap, strict=True) if is_gap]
+    )
+    assert gap_segments[:, 1].min() >= 2 * 100
+    assert gap_segments[:, 1].max() <= 5 * 100
     # the division 1->(2, 3) gives two dashed branch links
     assert set(branch.properties["source_node"]) == {1}
     assert set(branch.properties["target_node"]) == {2, 3}

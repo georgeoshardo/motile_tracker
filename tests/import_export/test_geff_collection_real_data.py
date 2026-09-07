@@ -69,6 +69,16 @@ def test_trench_loads_into_kymograph_and_is_editable(make_napari_viewer):
     assert kymograph_layers.page_start == 300
     assert kymograph_layers.labels_layer.data.shape == (164, 120 * 34)
 
+    # the time slider has one step per frame and turns the page when needed
+    time_slider = kymograph_layers.time_slider
+    assert time_slider is not None
+    assert time_slider.slider.maximum() == 720
+    time_slider.slider.setValue(600)
+    assert kymograph_layers.current_timepoint == 600
+    assert kymograph_layers.node_on_page(
+        next(n for n in tracks.graph.node_ids() if tracks.get_time(n) == 600)
+    )
+
     # break and restore a link
     on_page = [
         (int(s), int(t))

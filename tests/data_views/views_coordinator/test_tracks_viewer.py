@@ -694,8 +694,10 @@ class TestKymographMode:
         kymograph_layers = tracks_viewer.kymograph_layers
         assert kymograph_layers.continuation_links_layer is not None
         assert kymograph_layers.branch_links_layer is not None
-        # one continuation (3->4); 4->5 skips a frame and is not drawn as a path
-        assert len(kymograph_layers.continuation_links_layer.data) == 1
+        # one solid path (3->4); 4->5 skips a frame and is drawn as a dashed gap link
+        link_kinds = kymograph_layers.continuation_links_layer.properties["link_kind"]
+        assert (link_kinds == "continuation").sum() == 1
+        assert (link_kinds == "gap").sum() > 1
         # two division edges (1->2 and 1->3), each drawn as a dashed line
         assert (
             len(
