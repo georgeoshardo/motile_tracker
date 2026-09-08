@@ -156,7 +156,9 @@ def test_merge_then_split_two_real_cells():
 
     plan = propose_split(tracks, kept, image=np.asarray(image[t], dtype=float))
     assert plan is not None
-    assert plan.method == "guides"  # the other cell's parent had lost its child
+    # the other cell's parent had lost its child, so the previous frame guided the
+    # split (directly, or by confirming the image cut)
+    assert plan.method in {"guides", "watershed"}
     split = SplitNode(tracks, plan)
     new = split.new_node
 
@@ -184,3 +186,52 @@ def test_merge_then_split_two_real_cells():
     assert np.array_equal(node_mask(tracks, a), mask_a)
     assert np.array_equal(node_mask(tracks, b), mask_b)
     assert [int(c) for c in tracks.successors(parent_b)] == [b]
+
+
+def test_split_quality_on_merged_neighbours():
+    """The split cascade recovers artificially merged neighbouring cells: over a
+    sample of touching pairs from two trenches, the mean IoU with the true cells
+    stays high, with the previous frame as guide and the raw image as evidence."""
+    from motile_tracker.data_views.views_coordinator.mask_split import (
+        bright_cells_in_frame,
+        split_mask,
+    )
+    from motile_tracker.import_export.geff_collection import load_geff_group
+
+    def iou(x, y):
+        return np.count_nonzero(x & y) / np.count_nonzero(x | y)
+
+    scores = []
+    for trench in ("trench_0165", "trench_0279"):
+        loaded = load_geff_group(STORE / trench / "tracking_graph.geff")
+        tracks, image = loaded.tracks, loaded.image
+        for t in range(40, 700, 30):
+            frame = np.asarray(tracks.segmentation[t])
+            previous = np.asarray(tracks.segmentation[t - 1])
+            labels = [int(v) for v in np.unique(frame) if v != 0]
+            extents = {n: np.nonzero(frame == n)[0] for n in labels}
+            ordered = sorted(labels, key=lambda n: extents[n].min())
+            bright = bright_cells_in_frame(image[t], frame)
+            for a, b in zip(ordered, ordered[1:], strict=False):
+                if extents[b].min() - extents[a].max() > 1:  # not touching
+                    continue
+                if len(tracks.predecessors(a)) != 1 or len(tracks.predecessors(b)) != 1:
+                    continue
+                mask_a, mask_b = frame == a, frame == b
+                guides = (
+                    previous == int(tracks.predecessors(a)[0]),
+                    previous == int(tracks.predecessors(b)[0]),
+                )
+                result = split_mask(
+                    mask_a | mask_b, image=image[t], guides=guides, bright_cells=bright
+                )
+                assert result is not None
+                part_a, part_b = result.parts
+                straight = (iou(part_a, mask_a) + iou(part_b, mask_b)) / 2
+                swapped = (iou(part_a, mask_b) + iou(part_b, mask_a)) / 2
+                scores.append(max(straight, swapped))
+
+    scores = np.asarray(scores)
+    assert len(scores) >= 50
+    assert scores.mean() > 0.95
+    assert np.mean(scores >= 0.8) > 0.95
