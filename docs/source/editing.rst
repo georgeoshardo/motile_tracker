@@ -44,6 +44,38 @@ Node attributes (e.g. size, position) can be updated in two ways:
     - If the source layer for tracking was a Points layer and no segmentation was provided, the points can be repositioned by clicking the 'Select points' button in the Points layer menu and clicking and dragging points to their new location.
     - If a segmentation layer was provided, node position is determined by the centroid location of each label. Therefore, nodes cannot be repositioned by moving their corresponding points in the Points layer. Instead, nodes can be updated by painting and/or erasing their labels in the Segmentation layer, which will automatically update their position and size properties.
 
+Splitting a node
+----------------
+
+Sometimes one mask covers two cells: a division the segmentation did not see, or
+two daughters that "rejoined" in one frame. Select the node and press ``C`` (or
+``Split [C]`` in the Editing menu). The mask is cut into two cells automatically:
+
+- when a neighbouring cell of the previous frame has no continuation, the two
+  previous cells guide the cut (each pixel goes to the nearer one) and the new cell
+  is linked to that neighbour;
+- otherwise the cut goes where the division septum shows in the raw image (the
+  image layer selected for the kymograph, or any image layer of the same shape),
+  falling back to the narrowest waist of the mask, and the new cell becomes a
+  second daughter of the node's parent;
+- the node's children are handed to whichever cell they overlap.
+
+Both cells are selected afterwards so that the result can be checked; ``Z`` undoes
+the whole split in one step. Splitting the next frame's merged mask right after
+uses the two cells just made as guides, so a run of merged frames is fixed by
+pressing ``C`` frame by frame.
+
+Merging nodes
+-------------
+
+The opposite mistake, two masks for one cell, is fixed by selecting the pieces
+(``SHIFT`` + click) and pressing ``J`` (or ``Merge [J]``). The pieces must be in
+the same frame. The piece that continues a track is kept (the largest one if
+none does), the others are painted into it and removed, and the kept cell
+inherits their parent when it had none and their children while it has room for
+them. Links that cannot be carried over are reported in a notification. ``Z``
+undoes the merge in one step.
+
 Editing edges
 *************
 

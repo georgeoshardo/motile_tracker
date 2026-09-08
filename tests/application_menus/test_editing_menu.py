@@ -160,3 +160,43 @@ def test_track_id_display(make_napari_viewer, solution_tracks_2d, click_node):
         f"rgba({color[0] * 255:.0f}, {color[1] * 255:.0f}, {color[2] * 255:.0f}"
         in style
     )
+
+
+def test_split_and_merge_button_states(
+    make_napari_viewer, solution_tracks_2d, click_node
+):
+    """Split needs exactly one node; merge needs two or more nodes of one frame."""
+    viewer = make_napari_viewer()
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+    editing_menu = EditingMenu(viewer)
+
+    assert not editing_menu.split_node_btn.isEnabled()
+    assert not editing_menu.merge_nodes_btn.isEnabled()
+
+    click_node(tracks_viewer, 2)
+    editing_menu.update_buttons()
+    assert editing_menu.split_node_btn.isEnabled()
+    assert not editing_menu.merge_nodes_btn.isEnabled()
+
+    click_node(tracks_viewer, 3, append=True)  # 2 and 3 are both at t=1
+    editing_menu.update_buttons()
+    assert not editing_menu.split_node_btn.isEnabled()
+    assert editing_menu.merge_nodes_btn.isEnabled()
+
+    click_node(tracks_viewer, 1)
+    click_node(tracks_viewer, 2, append=True)  # different frames
+    editing_menu.update_buttons()
+    assert not editing_menu.merge_nodes_btn.isEnabled()
+
+    # the buttons call the viewer's actions
+    click_node(tracks_viewer, 2)
+    click_node(tracks_viewer, 3, append=True)
+    editing_menu.update_buttons()
+    editing_menu.merge_nodes_btn.click()
+    assert len(tracks_viewer.tracks.graph.node_ids()) == 5
+
+    editing_menu.update_buttons()
+    assert editing_menu.split_node_btn.isEnabled()  # the merged cell is selected
+    editing_menu.split_node_btn.click()
+    assert len(tracks_viewer.tracks.graph.node_ids()) == 6

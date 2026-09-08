@@ -168,7 +168,7 @@ class EditingMenu(QWidget):
         box_layout.addLayout(track_layout)
 
         node_box = QGroupBox("Edit Node(s)")
-        node_box.setMaximumHeight(120)
+        node_box.setMaximumHeight(200)
         node_box_layout = QVBoxLayout()
 
         self.delete_node_btn = QPushButton("Delete [D]")
@@ -178,8 +178,25 @@ class EditingMenu(QWidget):
         self.swap_nodes_btn.clicked.connect(self.tracks_viewer.swap_nodes)
         self.swap_nodes_btn.setEnabled(False)
 
+        self.split_node_btn = QPushButton("Split [C]")
+        self.split_node_btn.setToolTip(
+            "Cut the selected node's mask into two cells (one mask that should have "
+            "been two) and repair the links around them."
+        )
+        self.split_node_btn.clicked.connect(self.tracks_viewer.split_node)
+        self.split_node_btn.setEnabled(False)
+        self.merge_nodes_btn = QPushButton("Merge [J]")
+        self.merge_nodes_btn.setToolTip(
+            "Join the selected nodes of one time point into one cell (two masks that "
+            "should have been one) and repair the links around it."
+        )
+        self.merge_nodes_btn.clicked.connect(self.tracks_viewer.merge_nodes)
+        self.merge_nodes_btn.setEnabled(False)
+
         node_box_layout.addWidget(self.delete_node_btn)
         node_box_layout.addWidget(self.swap_nodes_btn)
+        node_box_layout.addWidget(self.split_node_btn)
+        node_box_layout.addWidget(self.merge_nodes_btn)
 
         node_box.setLayout(node_box_layout)
 
@@ -215,7 +232,7 @@ class EditingMenu(QWidget):
         main_layout = QVBoxLayout()
         main_layout.addWidget(box)
         self.setLayout(main_layout)
-        self.setMaximumHeight(450)
+        self.setMaximumHeight(520)
 
     def update_track_id_color(self):
         """Display track ID value and color"""
@@ -252,6 +269,27 @@ class EditingMenu(QWidget):
             self.delete_node_btn.setEnabled(True)
             self.delete_edge_btn.setEnabled(False)
             self.create_edge_btn.setEnabled(False)
+
+        self.split_node_btn.setEnabled(self._can_split())
+        self.merge_nodes_btn.setEnabled(self._can_merge())
+
+    def _can_split(self) -> bool:
+        """Exactly one node of 2D+time tracks with a segmentation is selected."""
+        tracks = self.tracks_viewer.tracks
+        return (
+            tracks is not None
+            and tracks.segmentation is not None
+            and tracks.ndim == 3
+            and len(self.tracks_viewer.selected_nodes) == 1
+        )
+
+    def _can_merge(self) -> bool:
+        """Two or more nodes of one time point are selected (with a segmentation)."""
+        tracks = self.tracks_viewer.tracks
+        nodes = self.tracks_viewer.selected_nodes.as_list
+        if tracks is None or tracks.segmentation is None or len(nodes) < 2:
+            return False
+        return len({int(tracks.get_time(n)) for n in nodes}) == 1
 
 
 class EditingSelectionWidget(QWidget):
