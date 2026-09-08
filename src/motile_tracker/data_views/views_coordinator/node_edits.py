@@ -29,10 +29,18 @@ from typing import TYPE_CHECKING
 import numpy as np
 from funtracks.actions import ActionGroup
 from funtracks.exceptions import InvalidActionError
-from funtracks.user_actions import UserAddEdge, UserDeleteEdge, UserUpdateSegmentation
+from funtracks.user_actions import (
+    UserAddEdge,
+    UserDeleteEdge,
+    UserDeleteNode,
+    UserUpdateSegmentation,
+)
 from scipy import ndimage
 
-from motile_tracker.data_views.views_coordinator.mask_split import split_mask
+from motile_tracker.data_views.views_coordinator.mask_split import (
+    bright_cells_in_frame,
+    split_mask,
+)
 
 if TYPE_CHECKING:
     from funtracks.data_model import Tracks
@@ -229,9 +237,12 @@ def propose_split(
     node = int(node)
     if tracks.segmentation is None or tracks.ndim != 3:
         return None
-    mask = node_mask(tracks, node)
+    time = int(tracks.get_time(node))
+    frame = np.asarray(tracks.segmentation[time])
+    mask = frame == node
     if mask.sum() < 2:
         return None
+    bright_cells = bright_cells_in_frame(image, frame) if image is not None else None
 
     guides = None
     owners: tuple[int | None, int | None] = (None, None)
@@ -243,10 +254,10 @@ def propose_split(
             guides = (node_mask(tracks, parent), node_mask(tracks, neighbour))
             owners = (parent, neighbour)
 
-    result = split_mask(mask, image=image, guides=guides)
+    result = split_mask(mask, image=image, guides=guides, bright_cells=bright_cells)
     if result is None:
         return None
-    if result.method != "guides":
+    if not result.guide_order:
         owners = (None, None)
     return plan_split(tracks, node, result.parts, owners=owners, method=result.method)
 
@@ -393,6 +404,8 @@ class MergeNodes(ActionGroup):
             for other in others:
                 pixels = mask_pixels(frame == other, time)
                 if len(pixels[0]) == 0:
+                    # nothing to paint over: just drop the (already detached) node
+                    self.actions.append(UserDeleteNode(tracks, other, _top_level=False))
                     continue
                 self.actions.append(
                     UserUpdateSegmentation(
