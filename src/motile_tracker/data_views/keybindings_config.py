@@ -63,6 +63,16 @@ KEYBINDINGS = {
         "qt_keys": [Qt.Key_S],
         "targets": ["tracks_viewer"],
     },
+    "split_node": {
+        "napari_keys": ["c"],  # Cut: one mask that should have been two
+        "qt_keys": [Qt.Key_C],
+        "targets": ["tracks_viewer"],
+    },
+    "merge_nodes": {
+        "napari_keys": ["j"],  # Join: two masks that should have been one
+        "qt_keys": [Qt.Key_J],
+        "targets": ["tracks_viewer"],
+    },
     "undo": {
         "napari_keys": ["z"],
         "qt_keys": [Qt.Key_Z],

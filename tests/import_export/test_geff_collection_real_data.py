@@ -114,3 +114,73 @@ def test_trench_loads_into_kymograph_and_is_editable(make_napari_viewer):
     tracks_viewer.undo()
     assert not tracks.graph.has_node(new_label)
     assert int(labels_layer.data[3, x0 + 2]) == 0
+
+
+def test_merge_then_split_two_real_cells():
+    """Merging two neighbouring cells of a trench and splitting the merged mask
+    again recovers both cells and their links, using the previous frame as guide."""
+    from motile_tracker.data_views.views_coordinator.node_edits import (
+        MergeNodes,
+        SplitNode,
+        node_mask,
+        propose_split,
+    )
+    from motile_tracker.import_export.geff_collection import load_geff_group
+
+    loaded = load_geff_group(STORE / "trench_0165" / "tracking_graph.geff")
+    tracks, image = loaded.tracks, loaded.image
+    t = 300
+    frame = np.asarray(tracks.segmentation[t])
+    labels = [int(v) for v in np.unique(frame) if v != 0]
+    # two vertically adjacent cells that both continue a track and have a successor
+    tops = {n: np.nonzero(frame == n)[0].min() for n in labels}
+    ordered = sorted(labels, key=tops.get)
+    pair = next(
+        (a, b)
+        for a, b in zip(ordered, ordered[1:], strict=False)
+        if len(tracks.predecessors(a)) == 1
+        and len(tracks.predecessors(b)) == 1
+        and len(tracks.successors(a)) == 1
+        and len(tracks.successors(b)) == 1
+    )
+    a, b = pair
+    parent_a, parent_b = int(tracks.predecessors(a)[0]), int(tracks.predecessors(b)[0])
+    child_a, child_b = int(tracks.successors(a)[0]), int(tracks.successors(b)[0])
+    mask_a, mask_b = node_mask(tracks, a), node_mask(tracks, b)
+
+    merged = MergeNodes(tracks, [a, b])
+    kept = merged.kept_node
+    other = a if kept == b else b
+    assert not tracks.graph.has_node(other)
+    assert np.array_equal(node_mask(tracks, kept), mask_a | mask_b)
+
+    plan = propose_split(tracks, kept, image=np.asarray(image[t], dtype=float))
+    assert plan is not None
+    assert plan.method == "guides"  # the other cell's parent had lost its child
+    split = SplitNode(tracks, plan)
+    new = split.new_node
+
+    def iou(x, y):
+        return np.count_nonzero(x & y) / np.count_nonzero(x | y)
+
+    part_kept, part_new = node_mask(tracks, kept), node_mask(tracks, new)
+    kept_is_a = kept == a
+    original_kept, original_new = (mask_a, mask_b) if kept_is_a else (mask_b, mask_a)
+    assert iou(part_kept, original_kept) > 0.9
+    assert iou(part_new, original_new) > 0.9
+    # links: each cell continues its own parent and keeps its own child
+    parent_kept, parent_new = (
+        (parent_a, parent_b) if kept_is_a else (parent_b, parent_a)
+    )
+    child_kept, child_new = (child_a, child_b) if kept_is_a else (child_b, child_a)
+    assert [int(p) for p in tracks.predecessors(kept)] == [parent_kept]
+    assert [int(p) for p in tracks.predecessors(new)] == [parent_new]
+    assert [int(c) for c in tracks.successors(kept)] == [child_kept]
+    assert [int(c) for c in tracks.successors(new)] == [child_new]
+
+    tracks.undo()  # the split
+    tracks.undo()  # the merge
+    assert tracks.graph.has_node(a) and tracks.graph.has_node(b)
+    assert np.array_equal(node_mask(tracks, a), mask_a)
+    assert np.array_equal(node_mask(tracks, b), mask_b)
+    assert [int(c) for c in tracks.successors(parent_b)] == [b]

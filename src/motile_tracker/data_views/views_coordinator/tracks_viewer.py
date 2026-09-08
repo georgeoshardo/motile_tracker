@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 import napari
+import numpy as np
 import pandas as pd
 from funtracks.actions import AddNode, BasicAction, DeleteNode
 from funtracks.data_model import SolutionTracks
@@ -14,7 +15,7 @@ from funtracks.user_actions import (
     UserDeleteNodes,
     UserSwapPredecessors,
 )
-from napari.utils.notifications import show_warning
+from napari.utils.notifications import show_info, show_warning
 from psygnal import Signal
 from qtpy.QtWidgets import QMessageBox
 
@@ -35,6 +36,11 @@ from motile_tracker.data_views.views.tree_view.tree_widget_utils import (
 )
 from motile_tracker.data_views.views_coordinator.groups import (
     CollectionWidget,
+)
+from motile_tracker.data_views.views_coordinator.node_edits import (
+    MergeNodes,
+    SplitNode,
+    propose_split,
 )
 from motile_tracker.data_views.views_coordinator.node_selection_history import (
     NodeSelectionHistory,
@@ -784,6 +790,68 @@ class TracksViewer:
                 else:
                     # Re-raise the exception if it is not forceable
                     raise
+
+    def _raw_image_frame(self, time: int) -> np.ndarray | None:
+        """The raw image of one frame, from the layer selected for the kymograph or
+        any image layer shaped like the segmentation; None if there is none."""
+        if self.tracks is None or self.tracks.segmentation is None:
+            return None
+        layer = self.kymograph_layers._resolved_image_layer()
+        if layer is None:
+            shape = tuple(int(v) for v in self.tracks.segmentation.shape)
+            for candidate in self.viewer.layers:
+                if (
+                    isinstance(candidate, napari.layers.Image)
+                    and not candidate.multiscale
+                    and tuple(int(v) for v in candidate.data.shape) == shape
+                ):
+                    layer = candidate
+                    break
+        if layer is None:
+            return None
+        return np.asarray(layer.data[int(time)], dtype=float)
+
+    def split_node(self, event=None):
+        """Split the selected node's mask into two cells and repair the links around
+        them: one mask that should have been two (a division the segmentation
+        missed, or two cells that rejoined). One undo step.
+        """
+        if self.tracks is None or self.tracks.segmentation is None:
+            return
+        if len(self.selected_nodes) != 1:
+            show_warning("Select exactly one node to split.")
+            return
+        if self.tracks.ndim != 3:
+            show_warning("Splitting nodes is only available for 2D+time data.")
+            return
+        node = int(self.selected_nodes[0])
+        image = self._raw_image_frame(int(self.tracks.get_time(node)))
+        plan = propose_split(self.tracks, node, image=image)
+        if plan is None:
+            show_warning(f"Node {node} is too small to split.")
+            return
+        action = SplitNode(self.tracks, plan)
+        # the refresh selected the new cell; show both halves
+        self.selected_nodes.add(node, append=True)
+        for note in action.notes:
+            show_info(note)
+
+    def merge_nodes(self, event=None):
+        """Merge the selected nodes, which must share a time point, into one cell:
+        two masks that should have been one. One undo step.
+        """
+        if self.tracks is None or self.tracks.segmentation is None:
+            return
+        nodes = [int(n) for n in self.selected_nodes.as_list]
+        if len(nodes) < 2:
+            show_warning("Select two or more nodes at the same time point to merge.")
+            return
+        if len({int(self.tracks.get_time(n)) for n in nodes}) != 1:
+            show_warning("Only nodes at the same time point can be merged.")
+            return
+        action = MergeNodes(self.tracks, nodes)
+        for note in action.notes:
+            show_info(note)
 
     def undo(self, event=None):
         if self.tracks is None:
