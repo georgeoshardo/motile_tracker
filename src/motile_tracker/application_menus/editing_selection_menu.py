@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import napari
 from fonticon_fa6 import FA6S
 from qtpy.QtWidgets import (
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -168,8 +169,7 @@ class EditingMenu(QWidget):
         box_layout.addLayout(track_layout)
 
         node_box = QGroupBox("Edit Node(s)")
-        node_box.setMaximumHeight(200)
-        node_box_layout = QVBoxLayout()
+        node_box_layout = QGridLayout()
 
         self.delete_node_btn = QPushButton("Delete [D]")
         self.delete_node_btn.clicked.connect(self.tracks_viewer.delete_node)
@@ -193,10 +193,10 @@ class EditingMenu(QWidget):
         self.merge_nodes_btn.clicked.connect(self.tracks_viewer.merge_nodes)
         self.merge_nodes_btn.setEnabled(False)
 
-        node_box_layout.addWidget(self.delete_node_btn)
-        node_box_layout.addWidget(self.swap_nodes_btn)
-        node_box_layout.addWidget(self.split_node_btn)
-        node_box_layout.addWidget(self.merge_nodes_btn)
+        node_box_layout.addWidget(self.delete_node_btn, 0, 0)
+        node_box_layout.addWidget(self.swap_nodes_btn, 0, 1)
+        node_box_layout.addWidget(self.split_node_btn, 1, 0)
+        node_box_layout.addWidget(self.merge_nodes_btn, 1, 1)
 
         node_box.setLayout(node_box_layout)
 
@@ -232,7 +232,7 @@ class EditingMenu(QWidget):
         main_layout = QVBoxLayout()
         main_layout.addWidget(box)
         self.setLayout(main_layout)
-        self.setMaximumHeight(520)
+        self.setMaximumHeight(480)
 
     def update_track_id_color(self):
         """Display track ID value and color"""
