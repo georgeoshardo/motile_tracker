@@ -37,8 +37,12 @@ FIELD_ALIASES = {
     "id": ("node_id",),
 }
 
-# column names in the loaded file that should not be fuzzily matched
-EXACT_ONLY_PROPS = {"id", "node_id", "parent_id"}
+# Column names that belong to one field, and the field they belong to. They stay
+# out of the fuzzy matching for every *other* field: "parent_id" points at
+# another node, yet scores 0.60 against "tracklet_id" and 0.42 against
+# "lineage_id". Matching them to their own field is what they are for, so that
+# stays allowed - an "ID" column still fills the "id" field.
+RESERVED_PROPS = {"id": "id", "node_id": "id", "parent_id": "parent_id"}
 
 
 def get_attr_dtype_zarr(root: zarr.Group, attr: str) -> str:
@@ -275,13 +279,15 @@ class StandardFieldMapWidget(QWidget):
                 mapping[attribute] = attribute
                 self.props_left.remove(attribute)
 
-        # then by a known alias, before any fuzzy matching gets the chance to
-        # prefer a coincidentally longer name
+        # then by the field's own name ignoring case, or by a known alias, before
+        # any fuzzy matching gets the chance to prefer a coincidentally longer
+        # name. The exact pass above is case-sensitive, so "ID" and "TIME" arrive
+        # here still unmapped.
         for attribute in self.standard_fields:
             if attribute in mapping:
                 continue
             lower_map = {p.lower(): p for p in self.props_left}
-            for alias in FIELD_ALIASES.get(attribute, ()):
+            for alias in (attribute, *FIELD_ALIASES.get(attribute, ())):
                 if alias in lower_map:
                     mapping[attribute] = lower_map[alias]
                     self.props_left.remove(lower_map[alias])
@@ -301,7 +307,7 @@ class StandardFieldMapWidget(QWidget):
                 lower_map = {
                     p.lower(): p
                     for p in self.props_left
-                    if p.lower() not in EXACT_ONLY_PROPS
+                    if RESERVED_PROPS.get(p.lower(), attribute) == attribute
                 }
                 closest = difflib.get_close_matches(
                     attribute.lower(), lower_map.keys(), n=1, cutoff=0.4
