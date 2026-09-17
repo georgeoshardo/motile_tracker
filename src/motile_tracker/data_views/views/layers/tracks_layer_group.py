@@ -148,7 +148,7 @@ class TracksLayerGroup:
         if (
             (self.seg_layer is None and self.points_layer.mode == "pan_zoom")
             or (self.seg_layer is not None and self.seg_layer.mode == "pan_zoom")
-            or not self.tracks_viewer.interacting_with_viewer
+            or not self.tracks_viewer.interacting_with_canvas
         ):
             location = self.tracks.get_position(node, incl_time=True)
             assert len(location) == self.viewer.dims.ndim, (

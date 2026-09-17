@@ -120,7 +120,7 @@ class TracksViewer:
         # True while an interaction in the napari canvas (a click or a paint event) is
         # being processed, so that centering requests know where they came from (see
         # viewer_interaction and TracksLayerGroup.center_view)
-        self.interacting_with_viewer = False
+        self.interacting_with_canvas = False
 
         self.collection_widget = None
 
@@ -401,12 +401,12 @@ class TracksViewer:
         pan_zoom mode.
         """
 
-        previous = self.interacting_with_viewer
-        self.interacting_with_viewer = True
+        previous = self.interacting_with_canvas
+        self.interacting_with_canvas = True
         try:
             yield
         finally:
-            self.interacting_with_viewer = previous
+            self.interacting_with_canvas = previous
 
     def center_on_node(self, node: int) -> None:
         """Request all views to center on the given node.
