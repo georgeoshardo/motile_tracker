@@ -56,6 +56,9 @@ icon on the row of your trench. It writes a folder ending in `.geff` into the
 directory shown above the list (Browse to change it, for example to a shared
 drive). Save every 10 to 15 minutes, and once more before quitting.
 
+To check a save worked: the folder's modification time in Finder updates, and
+loading it back (below) shows your edits.
+
 To continue later: Tracks List > choose **Tracks (geff)** in the dropdown >
 **Load**, pick the saved `.geff` folder, then load the same trench's image in the
 Kymograph Data tab with *Open in kymograph view* unticked, select the image layer

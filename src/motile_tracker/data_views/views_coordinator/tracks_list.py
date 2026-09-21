@@ -307,7 +307,12 @@ class TracksList(QGroupBox):
             tracks_button = self.tracks_list.itemWidget(selected[0])
             name = tracks_button.name.text()
             self._update_save_name(name)
-            self.view_tracks.emit(_as_solution_tracks(tracks_button.tracks), name)
+            # The viewer edits the SolutionTracks; keep that same object on the row,
+            # so that saving and exporting write what the user edited. A plain Tracks
+            # left on the row would share the graph but not see nodes added later
+            # (its solution view is built once, at load).
+            tracks_button.tracks = _as_solution_tracks(tracks_button.tracks)
+            self.view_tracks.emit(tracks_button.tracks, name)
 
     def add_tracks(self, tracks: Tracks, name: str, select=True):
         """Add tracks to the list and optionally select them. Will make a new

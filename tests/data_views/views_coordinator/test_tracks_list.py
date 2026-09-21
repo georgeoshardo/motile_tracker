@@ -113,8 +113,10 @@ class TestTracksListAddRemove:
     def test_view_tracks_emits_solution_tracks_for_plain_tracks(
         self, tracks_list, graph_2d
     ):
-        """The list stores plain Tracks, but view_tracks must emit a
-        SolutionTracks because the views and actions still need track IDs.
+        """view_tracks must emit a SolutionTracks because the views and actions
+        still need track IDs, and the row must then hold that same object, so
+        that saving writes the cells the viewer added (see
+        test_new_cells_survive_saving_from_the_tracks_list).
         """
         # the fixture graph stores track ids in "track_id", so that has to be
         # declared: tracklet_attr is how a caller names an existing column
@@ -124,13 +126,13 @@ class TestTracksListAddRemove:
         tracks_list.view_tracks.connect(lambda t, n: emitted.append((t, n)))
         tracks_list.add_tracks(plain_tracks, "plain", select=True)
 
-        # stored as-is, not converted on the way in
-        item = tracks_list.tracks_list.item(0)
-        assert tracks_list.tracks_list.itemWidget(item).tracks is plain_tracks
-
         assert len(emitted) == 1
         converted = emitted[0][0]
         assert isinstance(converted, SolutionTracks)
+        # the row now holds the converted object, the one the viewer edits
+        item = tracks_list.tracks_list.item(0)
+        assert tracks_list.tracks_list.itemWidget(item).tracks is converted
+        assert converted.graph_full is plain_tracks.graph_full
         # the conversion must carry over the attributes the views rely on
         # rather than re-deriving them
         assert converted.scale == plain_tracks.scale
