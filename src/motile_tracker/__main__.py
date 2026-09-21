@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -57,6 +58,21 @@ def load_startup_data(
     add_geff_group_to_viewer(viewer, selected.path, selected.name, kymograph=kymograph)
 
 
+def _activate_on_macos(viewer: napari.Viewer) -> None:
+    """Force the napari window (and its menu bar) to take focus on macOS.
+
+    When napari is launched as a subprocess of another app (e.g. VS Code's
+    integrated terminal), the OS sometimes leaves the parent app's menu bar
+    in place even though napari's window is frontmost. Explicitly raising
+    and activating the window nudges macOS into handing over the menu bar.
+    """
+    if sys.platform != "darwin":
+        return
+    window = viewer.window._qt_window
+    window.raise_()
+    window.activateWindow()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -86,6 +102,7 @@ def main():
 
     viewer = napari.Viewer()
     StartupWidget(viewer, mode=args.mode)
+    _activate_on_macos(viewer)
 
     if args.data is not None:
         # after StartupWidget has docked its widgets (it finishes via QTimer too)
@@ -100,4 +117,9 @@ def main():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(filename)s:%(lineno)d] %(levelname)-8s %(message)s",
+    )
+    logging.getLogger("motile_tracker").setLevel(logging.DEBUG)
     sys.exit(main())
