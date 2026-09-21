@@ -449,21 +449,48 @@ class VisualizationWidget(QWidget):
         )
 
     def _update_visualization(self):
-        """Apply the values from the widget and send an update signal."""
+        """Apply the values from the widget and send an update signal.
+
+        Returns without touching the layer when the widgets already agree with
+        it. This runs on every `mode_updated`, which includes pressing Q - and
+        there only the *enabled* state of these widgets changes, never their
+        values. Applying them anyway triggers a second `update_selection`, and
+        each one re-slices the whole displayed volume: 6 s in 3D on a
+        1.7e9-voxel timepoint, for a result identical to the refresh
+        `set_display_mode` has already done.
+        """
 
         layers = [
             self.tracks_viewer.tracking_layers.seg_layer,
             self.tracks_viewer.kymograph_layers.labels_layer,
         ]
+        wanted = (
+            self.highlight_widget.opacity.value(),
+            self.foreground_widget.opacity.value(),
+            self.background_widget.opacity.value(),
+            not self.highlight_widget.contour.isChecked(),
+            not self.foreground_widget.contour.isChecked(),
+        )
         updated = False
         for layer in layers:
             if layer is None:
                 continue
-            layer.highlight_opacity = self.highlight_widget.opacity.value()
-            layer.foreground_opacity = self.foreground_widget.opacity.value()
-            layer.background_opacity = self.background_widget.opacity.value()
-            layer.highlight_contour = not self.highlight_widget.contour.isChecked()
-            layer.foreground_contour = not self.foreground_widget.contour.isChecked()
+            current = (
+                layer.highlight_opacity,
+                layer.foreground_opacity,
+                layer.background_opacity,
+                layer.highlight_contour,
+                layer.foreground_contour,
+            )
+            if wanted == current:
+                continue
+            (
+                layer.highlight_opacity,
+                layer.foreground_opacity,
+                layer.background_opacity,
+                layer.highlight_contour,
+                layer.foreground_contour,
+            ) = wanted
             updated = True
 
         if updated:
