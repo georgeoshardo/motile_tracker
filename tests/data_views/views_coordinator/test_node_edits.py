@@ -317,3 +317,41 @@ class TestMerge:
         # parent 1 divides again, into 3 and the new cell; 4 still has one parent
         assert {int(c) for c in tracks.successors(1)} == {3, new}
         assert len(tracks.predecessors(4)) == 1
+
+
+def test_new_cells_survive_saving_from_the_tracks_list(
+    viewer, solution_tracks_2d, tmp_path
+):
+    """Cells created after loading (by a split or by painting) must be in the file
+    the Tracks List saves: the row has to hold the object the viewer edits."""
+    from funtracks.data_model import Tracks
+    from funtracks.import_export import import_from_geff
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    # a plain Tracks, as loaded from a GEFF
+    plain = Tracks(
+        solution_tracks_2d.graph_full,
+        ndim=3,
+        scale=solution_tracks_2d.scale,
+        features=solution_tracks_2d.features,
+    )
+    tracks_list = tracks_viewer.tracks_list
+    tracks_list.add_tracks(plain, "plain", select=True)
+    row = tracks_list.tracks_list.itemWidget(tracks_list.tracks_list.item(0))
+    assert row.tracks is tracks_viewer.tracks
+
+    tracks_viewer.selected_nodes.add(4)
+    tracks_viewer.split_node()
+    new = max(int(n) for n in tracks_viewer.tracks.graph.node_ids())
+    assert new > 6
+
+    tracks_list.save_dir_line.setText(str(tmp_path))
+    tracks_list.save_tracks(tracks_list.tracks_list.item(0))
+    reloaded = import_from_geff(tmp_path / "plain.geff")
+
+    assert reloaded.graph.has_node(new)
+    assert reloaded.graph.num_nodes() == tracks_viewer.tracks.graph.num_nodes()
+    assert np.array_equal(
+        np.asarray(reloaded.segmentation[2]),
+        np.asarray(tracks_viewer.tracks.segmentation[2]),
+    )
