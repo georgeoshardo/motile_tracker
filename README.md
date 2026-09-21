@@ -52,6 +52,14 @@ pip install motile-tracker[gurobi13]  # For Gurobi 13.x licenses
 Developers can clone the GitHub repository and then  use `uv` to install and run the code.
 See the developer guide in `DEVELOPER.md` for more information.
 
+### Installing on a Mac without developer tools
+
+`install/Install Motile Tracker.command` is a double-clickable installer for
+annotators: it installs [uv](https://docs.astral.sh/uv/) (which brings its own
+Python), downloads this repository, builds the environment and puts a **Motile
+Tracker** app into `~/Applications`. See `install/STUDENT_GUIDE.md` for the
+hand-out that goes with it.
+
 ## Usage
 
 Start napari and call the main widget via Plugins > Motile > Motile Main Widget.
