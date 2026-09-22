@@ -16,10 +16,11 @@ from uuid import uuid4
 import zarr
 
 from .codec import dumps
+from .deltas import apply_changes, encode_changes
 
 HISTORY_GROUP = "edit_history"
 DB_NAME = "history.sqlite"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def history_path(path):
@@ -90,11 +91,11 @@ class Store:
                                            session TEXT NOT NULL,
                                            operation TEXT NOT NULL, changes BLOB NOT NULL,
                                            history TEXT NOT NULL);
-                    PRAGMA user_version=1;
+                    PRAGMA user_version=2;
                     COMMIT;
                 """)
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
+            if version not in (1, SCHEMA_VERSION):
                 raise ValueError(f"Unsupported edit-history version {version}")
             if not readonly:
                 self.session_id = uuid4().hex
@@ -146,6 +147,13 @@ class Store:
         conn = self.connection
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # Upgrade only with a successful new edit. Legacy rows remain intact;
+            # older software must reject a file containing the compact format.
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (1, SCHEMA_VERSION):
+                raise ValueError(f"Unsupported edit-history version {version}")
+            if version == 1:
+                conn.execute("PRAGMA user_version=2")
             revision = conn.execute(
                 "SELECT COALESCE(MAX(id),-1)+1 FROM revisions"
             ).fetchone()[0]
@@ -209,7 +217,7 @@ class Store:
                     datetime.now(UTC).isoformat(),
                     self.session_id,
                     operation,
-                    zlib.compress(dumps(changes).encode()),
+                    zlib.compress(dumps(encode_changes(changes)).encode()),
                     dumps(history_delta),
                 ),
             )
@@ -263,14 +271,7 @@ class Store:
             "SELECT id,changes FROM revisions WHERE id<=? ORDER BY id", (revision,)
         ):
             found = number == revision
-            for kind, changes in json.loads(zlib.decompress(payload)).items():
-                for key, (_, after) in changes.items():
-                    if kind == "header":
-                        state["header"] = json.loads(after)
-                    elif after is None:
-                        state[kind].pop(key, None)
-                    else:
-                        state[kind][key] = json.loads(after)
+            apply_changes(state, json.loads(zlib.decompress(payload)))
         if not found:
             raise ValueError(f"No edit revision {revision}")
         return state
