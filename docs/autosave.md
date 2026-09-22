@@ -71,7 +71,9 @@ The persistence tests cover save/reopen/undo/redo, split-created cells, deleted
 candidates, editing after undo, groups, measurements, Zarr v2/v3, 3D masks,
 initially empty tracks, deletion of the final cell, copies, read-only working
 copies, external modification, failed writes, interrupted undo, failed loading,
-and abrupt subprocess exit without Save or close. Tests use temporary data.
+and abrupt subprocess exit without Save or close. Tests use temporary data. The
+full suite passed 631 tests (4 optional-data skips and 1 expected failure); the
+four optional real-data tests also passed separately on copied datasets.
 
 A development measurement on a temporary copy of trench_0165 (3,309 nodes) found
 an initial save of approximately 0.68 seconds and a median of 107 ms for 20 link

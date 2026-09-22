@@ -6,6 +6,7 @@ it or keep it in the repository root to run these tests.
 """
 
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,30 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def editable_trench_store(tmp_path, monkeypatch):
+    """Autosave must never turn a real-data smoke test into a source-data edit."""
+    from motile_tracker.import_export import geff_collection
+
+    destination = tmp_path / "trenches.zarr"
+    for trench in ("trench_0165", "trench_0279"):
+        shutil.copytree(STORE / trench, destination / trench)
+    sessions = []
+    original = geff_collection.load_geff_group
+
+    def load(*args, **kwargs):
+        result = original(*args, **kwargs)
+        session = getattr(result.tracks, "edit_session", None)
+        if session is not None:
+            sessions.append(session)
+        return result
+
+    monkeypatch.setattr(geff_collection, "load_geff_group", load)
+    yield destination
+    for session in sessions:
+        session.close()
+
+
 class _PaintEvent:
     def __init__(self, value):
         self.value = value
@@ -46,9 +71,11 @@ def test_find_all_trenches():
     assert groups[0].path == STORE / "trench_0165" / "tracking_graph.geff"
 
 
-def test_trench_loads_into_kymograph_and_is_editable(make_napari_viewer):
+def test_trench_loads_into_kymograph_and_is_editable(
+    make_napari_viewer, editable_trench_store
+):
     viewer = make_napari_viewer()
-    group = find_geff_groups(STORE)[0]
+    group = find_geff_groups(editable_trench_store)[0]
 
     loaded = add_geff_group_to_viewer(viewer, group.path, group.name)
 
@@ -116,7 +143,7 @@ def test_trench_loads_into_kymograph_and_is_editable(make_napari_viewer):
     assert int(labels_layer.data[3, x0 + 2]) == 0
 
 
-def test_merge_then_split_two_real_cells():
+def test_merge_then_split_two_real_cells(editable_trench_store):
     """Merging two neighbouring cells of a trench and splitting the merged mask
     again recovers both cells and their links, using the previous frame as guide."""
     from motile_tracker.data_views.views_coordinator.node_edits import (
@@ -127,7 +154,9 @@ def test_merge_then_split_two_real_cells():
     )
     from motile_tracker.import_export.geff_collection import load_geff_group
 
-    loaded = load_geff_group(STORE / "trench_0165" / "tracking_graph.geff")
+    loaded = load_geff_group(
+        editable_trench_store / "trench_0165" / "tracking_graph.geff"
+    )
     tracks, image = loaded.tracks, loaded.image
     t = 300
     frame = np.asarray(tracks.segmentation[t])
@@ -188,7 +217,7 @@ def test_merge_then_split_two_real_cells():
     assert [int(c) for c in tracks.successors(parent_b)] == [b]
 
 
-def test_split_quality_on_merged_neighbours():
+def test_split_quality_on_merged_neighbours(editable_trench_store):
     """The split cascade recovers artificially merged neighbouring cells: over a
     sample of touching pairs from two trenches, the mean IoU with the true cells
     stays high, with the previous frame as guide and the raw image as evidence."""
@@ -203,7 +232,7 @@ def test_split_quality_on_merged_neighbours():
 
     scores = []
     for trench in ("trench_0165", "trench_0279"):
-        loaded = load_geff_group(STORE / trench / "tracking_graph.geff")
+        loaded = load_geff_group(editable_trench_store / trench / "tracking_graph.geff")
         tracks, image = loaded.tracks, loaded.image
         for t in range(40, 700, 30):
             frame = np.asarray(tracks.segmentation[t])
