@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
 )
 
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from motile_tracker.persistence.features import toggle_feature
 
 
 class FeatureWidget(QWidget):
@@ -116,13 +117,9 @@ class FeatureWidget(QWidget):
 
         tracks = self.tracks_viewer.tracks
 
-        if checked:
-            tracks.enable_features([feature_key])
-        else:
-            tracks.disable_features([feature_key])
-
         self._toggling = True
         try:
+            toggle_feature(tracks, feature_key, checked)
             self.tracks_viewer.update_track_df(initialization=False, refresh_view=False)
             self.tracks_viewer.tracks_updated.emit(False)
         finally:

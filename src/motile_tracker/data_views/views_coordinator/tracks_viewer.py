@@ -98,6 +98,7 @@ class TracksViewer:
         self.table_widget_present = False
 
         def _clear_if_current():
+            self.tracks_list.close_sessions()
             self._disconnect_tracks()
             if hasattr(TracksViewer, "_instance") and TracksViewer._instance is self:
                 del TracksViewer._instance

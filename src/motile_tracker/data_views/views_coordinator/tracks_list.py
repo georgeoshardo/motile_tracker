@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from uuid import uuid4
 from warnings import warn
 
 from appdirs import AppDirs
@@ -10,7 +11,7 @@ from fonticon_fa6 import FA6S
 from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.import_export import import_from_geff
 from napari._qt.qt_resources import QColoredSVGIcon
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -35,6 +36,8 @@ from motile_tracker.import_export.menus.import_dialog import (
     ImportDialog,
 )
 from motile_tracker.motile.backend.motile_run import MotileRun
+from motile_tracker.persistence.paths import create_session, open_session
+from motile_tracker.persistence.session import has_history
 
 GEFF_SUFFIX = ".geff"
 
@@ -110,7 +113,7 @@ class TracksButton(QWidget):
         self.delete.setToolTip("Remove track result")
         save_icon = qticon(FA6S.floppy_disk, color="white")
         self.save = QPushButton(icon=save_icon)
-        self.save.setToolTip("Save tracks")
+        self.save.setToolTip("Save a copy (edits are saved automatically)")
         self.save.setFixedSize(20, 20)
         export_icon = qticon(FA6S.file_export, color="white")
         self.export = QPushButton(icon=export_icon)
@@ -180,13 +183,21 @@ class TracksList(QGroupBox):
         # sit above the directory field so that the path, which is long, gets
         # the full width of the dock.
         self._save_name_edited = False
+        self._sessions = {}
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(250)
+        self._status_timer.timeout.connect(self._update_autosave_status)
+        self._status_timer.start()
+        self.destroyed.connect(lambda: self.close_sessions())
+        self.autosave_status = QLabel("Edits are saved automatically")
+        self.autosave_status.setWordWrap(True)
 
         self.save_browse_button = QPushButton("Browse")
         self.save_browse_button.setAutoDefault(0)
         self.save_browse_button.clicked.connect(self._browse_save_dir)
 
         save_dir_header = QHBoxLayout()
-        save_dir_header.addWidget(QLabel("Save directory:"))
+        save_dir_header.addWidget(QLabel("Copy directory:"))
         save_dir_header.addStretch()
         save_dir_header.addWidget(self.save_browse_button)
 
@@ -198,7 +209,7 @@ class TracksList(QGroupBox):
         self.save_name_line.textEdited.connect(self._on_save_name_edited)
 
         save_name_row = QHBoxLayout()
-        save_name_row.addWidget(QLabel("Save filename:"))
+        save_name_row.addWidget(QLabel("Copy filename:"))
         save_name_row.addWidget(self.save_name_line)
         save_name_row.addWidget(QLabel(GEFF_SUFFIX))
 
@@ -226,6 +237,7 @@ class TracksList(QGroupBox):
         load_menu.addWidget(load_button)
 
         layout = QVBoxLayout()
+        layout.addWidget(self.autosave_status)
         layout.addLayout(save_dir_header)
         layout.addWidget(self.save_dir_line)
         layout.addLayout(save_name_row)
@@ -314,7 +326,7 @@ class TracksList(QGroupBox):
             tracks_button.tracks = _as_solution_tracks(tracks_button.tracks)
             self.view_tracks.emit(tracks_button.tracks, name)
 
-    def add_tracks(self, tracks: Tracks, name: str, select=True):
+    def add_tracks(self, tracks: Tracks, name: str, select=True, source_path=None):
         """Add tracks to the list and optionally select them. Will make a new
         row in the list UI representing the given tracks.
 
@@ -329,6 +341,20 @@ class TracksList(QGroupBox):
             select (bool, optional): Whether or not to select the new tracks item in the
                 list (and thus display it in the tracks viewer). Defaults to True.
         """
+        tracks = _as_solution_tracks(tracks)
+        session = getattr(tracks, "edit_session", None)
+        if session is None or session.closed:
+            path = Path(source_path).expanduser().resolve() if source_path else None
+            if path is not None and has_history(path):
+                session = self._sessions.get(path) or open_session(
+                    path, default_save_dir()
+                )
+                tracks = session.tracks
+            else:
+                if path is None or path.is_file() or not path.exists():
+                    path = self._new_autosave_path(name)
+                session = create_session(tracks, path, default_save_dir())
+        self._sessions[session.path] = session
         item = QListWidgetItem(self.tracks_list)
         tracks_row = TracksButton(tracks, name)
         self.tracks_list.setItemWidget(item, tracks_row)
@@ -339,6 +365,38 @@ class TracksList(QGroupBox):
         tracks_row.save.clicked.connect(partial(self.save_tracks, item))
         if select:
             self.tracks_list.setCurrentRow(len(self.tracks_list) - 1)
+        return tracks
+
+    def _new_autosave_path(self, name):
+        # Dataset names can contain collection paths. They are display text, not
+        # permission to escape the application's autosave directory.
+        stem = Path(name).name.removesuffix(GEFF_SUFFIX) or "tracks"
+        return default_save_dir() / f"{stem}_{uuid4().hex[:12]}.geff"
+
+    def _update_autosave_status(self):
+        for session in self._sessions.values():
+            if not session.closed:
+                session.poll()
+        selected = self.tracks_list.selectedItems()
+        if selected:
+            tracks = self.tracks_list.itemWidget(selected[0]).tracks
+            session = getattr(tracks, "edit_session", None)
+            if session:
+                self.autosave_status.setText(
+                    f"Autosave stopped: {session.error}"
+                    if session.error
+                    else f"{session.poll()} · revision {session.revision}\n{session.path}"
+                )
+                self.autosave_status.setToolTip(str(session.path))
+
+    def close_sessions(self):
+        # Also called after C++ widget destruction; use only Python state here.
+        for session in self._sessions.values():
+            try:
+                session.close()
+            except RuntimeError as exc:
+                warn(str(exc), stacklevel=2)
+        self._sessions.clear()
 
     def show_export_dialog(self, item: QListWidgetItem) -> None:
         """Prompt user to choose export format (csv or geff), then export the tracks
@@ -384,13 +442,23 @@ class TracksList(QGroupBox):
                 stacklevel=2,
             )
             return
-        if saved_path.exists() and not self._confirm_overwrite(saved_path):
-            return
-
         widget: TracksButton = self.tracks_list.itemWidget(item)
         tracks: Tracks = widget.tracks
+        session = getattr(tracks, "edit_session", None)
+        if (
+            session is None
+            and saved_path.exists()
+            and not self._confirm_overwrite(saved_path)
+        ):
+            return
         saved_path.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(tracks, MotileRun):
+        if session is not None:
+            try:
+                session.save_copy(saved_path)
+            except (OSError, RuntimeError) as exc:
+                warn(str(exc), stacklevel=2)
+                return
+        elif isinstance(tracks, MotileRun):
             tracks.save(saved_path)
         else:
             write_geff_over(tracks, saved_path)
@@ -405,7 +473,24 @@ class TracksList(QGroupBox):
                 contains the TracksButton that represents a set of tracks.
         """
         row = self.tracks_list.indexFromItem(item).row()
+        session = getattr(
+            self.tracks_list.itemWidget(item).tracks, "edit_session", None
+        )
         self.tracks_list.takeItem(row)
+        if session and not any(
+            getattr(
+                self.tracks_list.itemWidget(self.tracks_list.item(i)).tracks,
+                "edit_session",
+                None,
+            )
+            is session
+            for i in range(self.tracks_list.count())
+        ):
+            try:
+                session.close()
+            except RuntimeError as exc:
+                warn(str(exc), stacklevel=2)
+            self._sessions.pop(session.path, None)
         if self.tracks_list.count() == 0:
             # An empty selection and an empty list are different states, and only
             # the second one means there is nothing left to show. Qt also drives
@@ -436,7 +521,7 @@ class TracksList(QGroupBox):
         if result is None:
             return
         tracks, name, source_path = result
-        self.add_tracks(tracks, name, select=True)
+        tracks = self.add_tracks(tracks, name, select=True, source_path=source_path)
         if source_path is not None:
             self.tracks_loaded.emit(tracks, source_path)
 
@@ -459,11 +544,24 @@ class TracksList(QGroupBox):
             return None
         directory = Path(self.file_dialog.selectedFiles()[0])
         try:
-            tracks = loader(directory)
+            source = (
+                directory
+                if geff_path is None or has_history(directory)
+                else geff_path(directory)
+            )
+            if source is not None and has_history(source):
+                source = source.resolve()
+                session = self._sessions.get(source) or open_session(
+                    source, default_save_dir()
+                )
+                source = session.path
+                self._sessions[source] = session
+                tracks = session.tracks
+            else:
+                tracks = loader(directory)
         except (ValueError, FileNotFoundError) as e:
             warn(f"Could not load tracks from {directory}: {e}", stacklevel=2)
             return None
-        source = directory if geff_path is None else geff_path(directory)
         return tracks, directory.stem, source or directory
 
     def load_internal_tracks(self) -> tuple[Tracks, str, Path] | None:

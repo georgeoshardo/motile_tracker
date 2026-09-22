@@ -17,7 +17,6 @@ from tracksdata.nodes import Mask
 from motile_tracker.data_views.views_coordinator.tracks_list import (
     TracksButton,
     TracksList,
-    default_save_dir,
 )
 from motile_tracker.motile.backend.motile_run import MotileRun, SolverParams
 
@@ -216,7 +215,9 @@ class TestTracksListSavePathFields:
     def test_save_dir_defaults_to_appdirs(self, tracks_list):
         """The save directory starts where the sample data lives, not in the
         user's home directory."""
-        assert tracks_list.save_dir_line.text() == str(default_save_dir())
+        from motile_tracker.data_views.views_coordinator import tracks_list as module
+
+        assert tracks_list.save_dir_line.text() == str(module.default_save_dir())
 
     def test_save_name_empty_before_any_selection(self, tracks_list):
         assert tracks_list.save_name_line.text() == ""
@@ -325,7 +326,7 @@ class TestTracksListSave:
 
         save_path = tmp_path / "run1.geff"
         assert (save_path / "nodes").exists()
-        assert list(tmp_path.iterdir()) == [save_path]
+        assert list(tmp_path.glob("*.geff")) == [save_path]
 
     def test_save_emits_tracks_saved_signal(self, tracks_list, motile_run, tmp_path):
         tracks_list.add_tracks(motile_run, "run1", select=True)
@@ -377,7 +378,7 @@ class TestTracksListSave:
             tracks_list.save_tracks(item)
 
         assert len(caught) == 1
-        assert list(tmp_path.iterdir()) == []
+        assert list(tmp_path.glob("*.geff")) == []
         assert len(emitted) == 0
 
     def test_save_creates_missing_save_directory(

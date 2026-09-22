@@ -8,6 +8,25 @@ from tracksdata.nodes._mask import Mask
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
+@pytest.fixture(autouse=True)
+def isolated_autosave_storage(tmp_path, monkeypatch):
+    """GUI tests must never write automatic results into the user's data folder."""
+    from motile_tracker.data_views.views_coordinator import tracks_list
+
+    monkeypatch.setattr(tracks_list, "default_save_dir", lambda: tmp_path / "autosaved")
+    widgets = []
+    original = tracks_list.TracksList.__init__
+
+    def initialize(widget):
+        original(widget)
+        widgets.append(widget)
+
+    monkeypatch.setattr(tracks_list.TracksList, "__init__", initialize)
+    yield
+    for widget in widgets:
+        widget.close_sessions()
+
+
 @pytest.fixture
 def click_node():
     """Return a helper that selects a node by simulating a layer click.

@@ -51,13 +51,25 @@ Messages in the bottom right corner tell you when a link could not be made
 
 ## Save your work
 
-Nothing is saved automatically. In the **Tracks List** tab, click the **save**
-icon on the row of your trench. It writes a folder ending in `.geff` into the
-directory shown above the list (Browse to change it, for example to a shared
-drive). Save every 10 to 15 minutes, and once more before quitting.
+Edits are saved automatically after each completed operation, including painting,
+splitting, merging, deleting, undo and redo. For a writable GEFF opened from disk,
+they go into that same `.geff` folder. The **Tracks List** shows the autosave
+destination and status. New results and CSV imports receive a uniquely named
+GEFF in the application's data folder. An unwritable source needs a local working
+copy; the displayed destination tells you which folder is being edited.
 
-To check a save worked: the folder's modification time in Finder updates, and
-loading it back (below) shows your edits.
+The folder also holds the editing history. Reopening it restores undo and redo,
+including edits from previous sessions. Keep the whole `.geff` folder together.
+If autosave reports an error, stop editing and resolve it; failed journal writes
+are rolled back. Recovery from an interrupted graph update happens on reopening
+in this fork. Use a local working folder and one editor per dataset.
+
+The floppy-disk button now saves a **copy**, including its history, at the copy
+directory/filename shown above the list. Choose a new name. Editing continues in
+the original autosave destination; open the copy to start editing it instead.
+Allow the application to finish closing before copying the folder in Finder.
+The standard GEFF graph updates in the background; other applications can read
+that result but do not restore this fork's editing history.
 
 To continue later: Tracks List > choose **Tracks (geff)** in the dropdown >
 **Load**, pick the saved `.geff` folder, then load the same trench's image in the
