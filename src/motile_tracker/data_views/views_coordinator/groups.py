@@ -30,6 +30,7 @@ from motile_tracker.data_views.views.tree_view.tree_widget_utils import (
     extract_lineage_tree,
 )
 from motile_tracker.import_export.menus.export_dialog import ExportDialog
+from motile_tracker.persistence.features import change_feature
 
 
 class CollectionButton(QWidget):
@@ -221,11 +222,35 @@ class CollectionWidget(QWidget):
     def _refresh(self) -> None:
         """Keep the node collection in sync with the node group attributes on the graph"""
 
+        tracks = self.tracks_viewer.tracks
+        if tracks is None:
+            return
+        names = {
+            name
+            for name, feature in tracks.features.items()
+            if feature["value_type"] == "bool" and name != "solution"
+        }
+        displayed = {
+            self.collection_list.itemWidget(self.collection_list.item(i)).name.text()
+            for i in range(self.collection_list.count())
+        }
+        if names != displayed:
+            self.retrieve_existing_groups()
+
         collection_items = [
             self.collection_list.itemWidget(self.collection_list.item(i))
             for i in range(self.collection_list.count())
         ]
         for collection_item in collection_items:
+            name = collection_item.name.text()
+            collection_item.collection = (
+                collection_item.collection
+                & self.tracks_viewer.selected_nodes.deleted_items
+            ) | {
+                n
+                for n in tracks.graph_full.node_ids()
+                if tracks.graph_full.nodes[n][name]
+            }
             nodes = (
                 collection_item.collection
                 - self.tracks_viewer.selected_nodes.deleted_items
@@ -435,7 +460,7 @@ class CollectionWidget(QWidget):
             }
 
             # Use add_feature to update both the FeatureDict and the graph schema
-            self.tracks_viewer.tracks.add_feature(name, new_feature)
+            change_feature(self.tracks_viewer.tracks, name, new_feature)
 
     def _remove_group(self, item: QListWidgetItem) -> None:
         """Remove a collection object from the list. You must pass the list item that
@@ -451,10 +476,7 @@ class CollectionWidget(QWidget):
         self.collection_list.takeItem(row)
 
         # remove from the features dict and graph schema
-        if group_name in self.tracks_viewer.tracks.features:
-            del self.tracks_viewer.tracks.features[group_name]
-        if group_name in self.tracks_viewer.tracks.graph.node_attr_keys():
-            self.tracks_viewer.tracks.graph.remove_node_attr_key(group_name)
+        change_feature(self.tracks_viewer.tracks, group_name, None)
 
         # If we removed the last group while in 'group' mode, fall back to 'all'
         # so the viewer doesn't stay stuck on an empty group view.

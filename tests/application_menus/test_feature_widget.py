@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 from funtracks.annotators._regionprops_annotator import DEFAULT_POS_KEY
 
@@ -88,7 +86,7 @@ def test_checkbox_state_reflects_enabled_features(
     assert len(widget._checkboxes) == 0
 
 
-def test_enable_feature_calls_tracks_methods(
+def test_feature_checkbox_changes_data_and_can_be_undone(
     make_napari_viewer,
     solution_tracks_2d,
 ):
@@ -97,14 +95,6 @@ def test_enable_feature_calls_tracks_methods(
     tracks_viewer.update_tracks(solution_tracks_2d, name="test")
 
     tracks = tracks_viewer.tracks
-
-    enable_mock = MagicMock()
-    disable_mock = MagicMock()
-    update_df_mock = MagicMock()
-
-    tracks.enable_features = enable_mock
-    tracks.disable_features = disable_mock
-    tracks_viewer.update_track_df = update_df_mock
 
     widget = FeatureWidget(viewer)
     widget._update_checkboxes()
@@ -117,20 +107,15 @@ def test_enable_feature_calls_tracks_methods(
 
     checkbox.setChecked(True)
 
-    enable_mock.assert_called_once_with(["circularity"])
-
-    # now turn off and verify that the right mock is called
-    enable_mock.reset_mock()
-    disable_mock.reset_mock()
-    update_df_mock.reset_mock()
+    assert "circularity" in tracks.features
+    measured = tracks.get_node_attr(4, "circularity")
+    assert measured > 0
 
     checkbox.setChecked(False)
-    disable_mock.assert_called_once_with(["circularity"])
-    enable_mock.assert_not_called()
-    update_df_mock.assert_called_once_with(
-        initialization=False,
-        refresh_view=False,
-    )
+    assert "circularity" not in tracks.features
+    assert "circularity" not in tracks.graph_full.node_attr_keys()
+    tracks.undo()
+    assert tracks.get_node_attr(4, "circularity") == measured
 
 
 def test_update_checkboxes_recreates_widgets(

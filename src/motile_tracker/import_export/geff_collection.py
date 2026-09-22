@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import warnings
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +33,9 @@ from typing import TYPE_CHECKING
 import zarr
 from funtracks.import_export import import_from_geff
 from geff import GeffMetadata
+
+from motile_tracker.persistence.paths import open_session
+from motile_tracker.persistence.session import EditSession, has_history
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -114,6 +117,8 @@ def _read_json(path: Path) -> dict:
 def is_geff_dir(path: Path) -> bool:
     """Whether the directory is a geff group: its zarr attributes carry a 'geff' key
     (zarr v2 keeps them in ``.zattrs``, zarr v3 in ``zarr.json``)."""
+    if has_history(path):
+        return True
     zattrs = path / ".zattrs"
     if zattrs.is_file():
         return "geff" in _read_json(zattrs)
@@ -258,7 +263,10 @@ def open_array(path: Path) -> np.ndarray | zarr.Array:
 
 
 def load_geff_group(
-    geff_path: Path, name: str | None = None, scale: list[float] | None = None
+    geff_path: Path,
+    name: str | None = None,
+    scale: list[float] | None = None,
+    session: EditSession | None = None,
 ) -> LoadedGeff:
     """Load a geff and the image it refers to, using its own metadata.
 
@@ -273,24 +281,47 @@ def load_geff_group(
             the related image array, if any.
     """
     geff_path = Path(geff_path)
-    with silence_geff_zarr_warnings():
-        metadata = GeffMetadata.read(geff_path)
-        related = read_related_arrays(geff_path, metadata)
-        name_map = node_name_map_from_metadata(metadata, related.label_prop)
-        tracks = import_from_geff(
-            geff_path,
-            name_map or None,
-            segmentation_path=related.labels_path,
-            scale=scale,
+    supplied_session = session
+    try:
+        with silence_geff_zarr_warnings():
+            if session is None and has_history(geff_path):
+                from appdirs import AppDirs
+
+                session = open_session(
+                    geff_path, AppDirs("motile-tracker").user_data_dir
+                )
+            if session is not None:
+                geff_path = session.path
+                # Recover root metadata before resolving its related image paths.
+                session.flush()
+            metadata = GeffMetadata.read(geff_path)
+            related = read_related_arrays(geff_path, metadata)
+            name_map = node_name_map_from_metadata(metadata, related.label_prop)
+            tracks = (
+                session.tracks
+                if session is not None
+                else import_from_geff(
+                    geff_path,
+                    name_map or None,
+                    segmentation_path=related.labels_path,
+                    scale=scale,
+                )
+            )
+        image = (
+            open_array(related.image_path) if related.image_path is not None else None
         )
-    image = open_array(related.image_path) if related.image_path is not None else None
-    return LoadedGeff(
-        name=name or geff_path.stem,
-        geff_path=geff_path,
-        tracks=tracks,
-        image=image,
-        image_path=related.image_path,
-    )
+        return LoadedGeff(
+            name=name or geff_path.stem,
+            geff_path=geff_path,
+            tracks=tracks,
+            image=image,
+            image_path=related.image_path,
+        )
+    except BaseException:
+        if session is not None and supplied_session is None:
+            with suppress(RuntimeError):  # Preserve the original loading error.
+                session.close()
+        raise
 
 
 def add_geff_group_to_viewer(
@@ -322,8 +353,9 @@ def add_geff_group_to_viewer(
     # imported here: the import/export package must stay importable without the views
     from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
-    loaded = load_geff_group(geff_path, name=name, scale=scale)
     tracks_viewer = TracksViewer.get_instance(viewer)
+    session = tracks_viewer.tracks_list._sessions.get(Path(geff_path).resolve())
+    loaded = load_geff_group(geff_path, name=name, scale=scale, session=session)
 
     if tracks_viewer.view_mode == "kymograph":
         tracks_viewer.set_view_mode("spatial")
@@ -336,7 +368,9 @@ def add_geff_group_to_viewer(
             scale=loaded.tracks.scale,
         )
 
-    tracks_viewer.tracks_list.add_tracks(loaded.tracks, loaded.name, select=True)
+    loaded.tracks = tracks_viewer.tracks_list.add_tracks(
+        loaded.tracks, loaded.name, select=True, source_path=loaded.geff_path
+    )
 
     if loaded.image_layer is not None:
         tracks_viewer.set_kymograph_image_layer(loaded.image_layer.name)
