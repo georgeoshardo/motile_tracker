@@ -39,6 +39,18 @@ before/after changes, deduplicated binary array payloads and action records, and
 undo/redo stack transitions. Earlier graphs can be reconstructed with
 `session.store.state_at(revision)`. Checkpoints do not prune history.
 
+Revisions record only changed attributes of existing records, including their old
+and new values. Whole records are retained for creation/deletion and when needed
+to preserve attribute ordering. Unchanged masks, coordinates and measurements are
+not repeated in a cell's revision just because its track ID changed.
+
+New databases use history format 2. Existing format-1 histories remain readable;
+their format flag advances atomically with the first successful new edit. Earlier
+revision bytes are left intact. Once a database contains format-2 edits, use this
+updated editor to resume it; older autosave builds reject that version. The change
+reduces future history growth without deleting history or automatically shrinking
+an existing database's initial storage.
+
 A single background worker rebuilds conventional GEFF data from a committed
 database snapshot. It never reads the graph while the UI is mutating it. Rapid
 edits can share one graph publication, but each has its own durable history
@@ -72,12 +84,12 @@ candidates, editing after undo, groups, measurements, Zarr v2/v3, 3D masks,
 initially empty tracks, deletion of the final cell, copies, read-only working
 copies, external modification, failed writes, interrupted undo, failed loading,
 and abrupt subprocess exit without Save or close. Tests use temporary data. The
-full suite passed 631 tests (4 optional-data skips and 1 expected failure); the
-four optional real-data tests also passed separately on copied datasets.
+full suite passed 654 tests with 1 expected failure, including the optional
+real-data tests on copied datasets.
 
-A development measurement on a temporary copy of trench_0165 (3,309 nodes) found
-an initial save of approximately 0.68 seconds and a median of 107 ms for 20 link
-deletions/undos including the edit and durable commit. The maximum was 279 ms;
-reopening took approximately 0.16 seconds. Compressed revision storage grew by
-about 2.8 MB. These are measurements of one local dataset and machine, not a
-latency guarantee for larger volumes or network storage.
+A comparison using four link edits in a 3,309-node trench reduced their combined
+compressed revision payload from 120,067 to 4,062 bytes (96.6%). Every revision
+replayed identically. A copy of the existing format-1 database also passed undo,
+redo, format upgrade, and reopening checks with earlier payloads unchanged.
+These figures describe revision payloads; the initial and current graph storage
+is separate and does not disappear when using compact revisions.
