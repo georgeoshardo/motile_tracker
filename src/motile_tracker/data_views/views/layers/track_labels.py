@@ -56,7 +56,10 @@ def _new_label(layer: TrackLabels, new_track_id=True):
             it to the selected_track attribute. Defaults to True.
     """
 
-    new_selected_label = max(layer.tracks_viewer.tracks.graph.node_ids(), default=0) + 1
+    # deleted nodes keep their ids (soft deletion, for undo) and cannot be painted
+    # onto, so the next label is taken from the full graph, not the solution
+    graph_full = layer.tracks_viewer.tracks.graph_full
+    new_selected_label = max(graph_full.node_ids(), default=0) + 1
     if new_track_id or layer.tracks_viewer.selected_track is None:
         layer.tracks_viewer.set_new_track_id()
     layer.selected_label = new_selected_label

@@ -87,8 +87,10 @@ class KymographTrackLabels(TrackLabels):
 
     def _next_unused_label(self) -> int:
         """Node ids double as segmentation labels, so the next free label is one more
-        than the largest node id."""
-        return max(self.tracks_viewer.tracks.graph.node_ids(), default=0) + 1
+        than the largest node id. Deleted nodes keep their ids (deletion is soft, so
+        that it can be undone, also across sessions), and painting with a deleted
+        node's id is refused, so the full graph is used, not the solution."""
+        return max(self.tracks_viewer.tracks.graph_full.node_ids(), default=0) + 1
 
     def _set_new_label(self, *, new_track_id: bool) -> None:
         if new_track_id or self.tracks_viewer.selected_track is None:
