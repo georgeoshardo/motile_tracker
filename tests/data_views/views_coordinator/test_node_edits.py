@@ -355,3 +355,48 @@ def test_new_cells_survive_saving_from_the_tracks_list(
         np.asarray(reloaded.segmentation[2]),
         np.asarray(tracks_viewer.tracks.segmentation[2]),
     )
+
+
+class TestNewLabelAfterDeletion:
+    """A new label must never be the id of a deleted node: deletion is soft, and
+    painting with a deleted node's id is refused (napari-track-edit #478)."""
+
+    def test_spatial_new_label_skips_an_undone_split(self, tracks_viewer_setup):
+        from motile_tracker.data_views.views.layers.track_labels import new_label
+
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        action = SplitNode(tracks, propose_split(tracks, 4))
+        tracks_viewer.undo()
+        assert not tracks.graph.has_node(action.new_node)
+
+        seg_layer = tracks_viewer.tracking_layers.seg_layer
+        new_label(seg_layer)
+
+        assert seg_layer.selected_label == action.new_node + 1
+
+    def test_kymograph_paint_after_deleting_the_newest_node(self, tracks_viewer_setup):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        assert tracks_viewer.set_view_mode("kymograph")
+        tracks_viewer.selected_nodes.add(6)  # the highest id
+        tracks_viewer.delete_node()
+        assert not tracks.graph.has_node(6)
+
+        tracks_viewer.request_new_track()
+        labels = tracks_viewer.kymograph_layers.labels_layer
+        new = int(labels.selected_label)
+        assert new == 7
+
+        class _Event:
+            def __init__(self, value):
+                self.value = value
+
+        # paint a small square into empty space of frame 3 (kymograph x 300-399)
+        yy, xx = np.meshgrid(np.arange(40, 44), np.arange(340, 344), indexing="ij")
+        old = labels.data[yy.ravel(), xx.ravel()]
+        assert not old.any()
+        labels.mode = "paint"
+        labels._on_paint(_Event([((yy.ravel(), xx.ravel()), old, new)]))
+
+        assert tracks.graph.has_node(new)
+        assert tracks.get_time(new) == 3
+        tracks_viewer.set_view_mode("spatial")
