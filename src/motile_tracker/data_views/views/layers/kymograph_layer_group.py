@@ -87,6 +87,7 @@ class KymographLayerGroup:
             # rebuild the layers so that they pick up the new tracks and name
             self.remove_napari_layers()
             self._refresh()
+            self.show_opening_view()
 
     def set_image_layer_name(self, layer_name: str | None) -> None:
         self.image_layer_name = layer_name or None
@@ -165,6 +166,7 @@ class KymographLayerGroup:
             return ok, message
         self.active = True
         self._refresh()
+        self.show_opening_view()
         return True, ""
 
     def deactivate(self) -> None:
@@ -580,15 +582,23 @@ class KymographLayerGroup:
             return
         self._sync_time_slider_from_camera()
 
+    def _frame_center_x(self, timepoint: int) -> float:
+        """World x of the centre of a frame on the current page. Pixel i is centred
+        at i * scale, so a frame of width w spans pixels t*w .. t*w + w - 1."""
+        geometry = self.geometry
+        column = (timepoint - self.page_start) * geometry.x_size
+        return (column + (geometry.x_size - 1) / 2.0) * geometry.x_scale
+
     def _timepoint_at_camera_center(self) -> int:
         """The timepoint whose frame is under the centre of the view, limited to
         the frames on the current page."""
-        frame_width = self.geometry.frame_world_width
+        geometry = self.geometry
         x_center = float(self.viewer.camera.center[-1])
         start, stop = visible_frame_range(
             self.geometry, self.page_start, self.page_length
         )
-        timepoint = start + int(np.floor(x_center / frame_width))
+        column = x_center / geometry.x_scale + 0.5  # pixel edges sit at half-steps
+        timepoint = start + int(np.floor(column / geometry.x_size))
         return int(np.clip(timepoint, start, max(start, stop - 1)))
 
     def _sync_time_slider_from_camera(self) -> None:
@@ -638,9 +648,7 @@ class KymographLayerGroup:
                 if new_start != self.page_start:
                     self.set_page(page_start=new_start)
 
-            x_center = (
-                timepoint - self.page_start + 0.5
-            ) * self.geometry.frame_world_width
+            x_center = self._frame_center_x(timepoint)
             camera_center = list(self.viewer.camera.center)
             camera_center[-1] = x_center
             self.viewer.camera.center = tuple(camera_center)
@@ -648,6 +656,41 @@ class KymographLayerGroup:
                 self.time_slider.set_value_silently(timepoint)
         finally:
             self._syncing_time = False
+
+    def show_opening_view(self, *, deferred: bool = True) -> None:
+        """Show the start of the movie: the first frame centred, zoomed so that a
+        frame's height fills the canvas.
+
+        Applied when the kymograph opens or shows other tracks. The canvas may
+        still change size while the window is being laid out (at start-up, or when
+        docks appear), so by default it is applied once more after Qt has processed
+        pending events.
+        """
+        if self.geometry is None or not self.active:
+            return
+        geometry = self.geometry
+        if self.page_start != 0:
+            self.set_page(page_start=0)
+        canvas_height = float(getattr(self.viewer, "_canvas_size", (0, 0))[0])
+        frame_height = geometry.y_size * geometry.y_scale
+        if canvas_height > 0 and frame_height > 0:
+            self.viewer.camera.zoom = canvas_height / frame_height
+        center = list(self.viewer.camera.center)
+        center[-2] = (geometry.y_size - 1) / 2.0 * geometry.y_scale
+        self.viewer.camera.center = tuple(center)
+        self.show_timepoint(0)
+        if deferred:
+            from qtpy.QtCore import QTimer
+
+            tracks = self.tracks
+            QTimer.singleShot(
+                0,
+                lambda: (
+                    self.show_opening_view(deferred=False)
+                    if self.active and self.tracks is tracks
+                    else None
+                ),
+            )
 
     def update_visible(self, visible_nodes: list[int] | str):
         self.visible_nodes = visible_nodes

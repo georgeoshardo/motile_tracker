@@ -41,7 +41,7 @@ def test_kymograph_mode_shows_a_time_slider(viewer, kymograph):
     assert layers._time_slider_dock is None
     assert slider.slider.minimum() == 0
     assert slider.slider.maximum() == 4  # one step per frame
-    assert slider.label.text() == "t = 2 / 4"  # the frame under the view centre
+    assert slider.label.text() == "t = 0 / 4"  # opens on the first frame
     # the viewer itself stays a plain 2D view
     assert viewer.dims.ndim == 2
     assert viewer.layers.selection.active is layers.labels_layer
@@ -236,3 +236,63 @@ def test_edge_across_a_frame_gap_is_drawn(viewer, kymograph, solution_tracks_2d)
     assert not (
         (paths.properties["source_node"] == 2) & (paths.properties["target_node"] == 6)
     ).any()
+
+
+def _assert_opening_view(viewer, layers):
+    """First frame centred, a frame's height filling the canvas."""
+    geometry = layers.geometry
+    canvas_height = viewer._canvas_size[0]
+    assert viewer.camera.zoom == pytest.approx(
+        canvas_height / (geometry.y_size * geometry.y_scale)
+    )
+    assert viewer.camera.center[-2] == pytest.approx((geometry.y_size - 1) / 2)
+    assert viewer.camera.center[-1] == pytest.approx((geometry.x_size - 1) / 2)
+    assert layers.page_start == 0
+    assert layers.current_timepoint == 0
+
+
+def test_kymograph_opens_on_the_first_frame_fitted_to_the_canvas(viewer, kymograph):
+    _assert_opening_view(viewer, kymograph.kymograph_layers)
+
+
+def test_reopening_the_kymograph_returns_to_the_opening_view(viewer, kymograph):
+    layers = kymograph.kymograph_layers
+    kymograph.set_kymograph_page_length(2)
+    layers.time_slider.slider.setValue(4)
+    viewer.camera.zoom = 0.3
+    assert layers.page_start != 0
+
+    kymograph.set_view_mode("spatial")
+    assert kymograph.set_view_mode("kymograph")
+
+    _assert_opening_view(viewer, layers)
+
+
+def test_showing_other_tracks_returns_to_the_opening_view(
+    viewer, kymograph, solution_tracks_2d
+):
+    layers = kymograph.kymograph_layers
+    layers.time_slider.slider.setValue(3)
+    viewer.camera.zoom = 0.3
+
+    kymograph.update_tracks(tracks=solution_tracks_2d, name="other")
+
+    _assert_opening_view(viewer, layers)
+
+
+def test_frame_centres_follow_pixel_centres(viewer, kymograph):
+    """A frame of width w spans pixel columns t*w .. t*w + w - 1, so its centre is
+    at t*w + (w - 1)/2 and the boundary to the next frame at (t+1)*w - 0.5."""
+    layers = kymograph.kymograph_layers
+    width = layers.geometry.x_size  # 100 px per frame
+
+    layers.time_slider.slider.setValue(2)
+    assert viewer.camera.center[-1] == pytest.approx(2 * width + (width - 1) / 2)
+
+    center = list(viewer.camera.center)
+    center[-1] = 2 * width - 0.6  # last pixel column of frame 1
+    viewer.camera.center = tuple(center)
+    assert layers.current_timepoint == 1
+    center[-1] = 2 * width - 0.4  # first pixel column of frame 2
+    viewer.camera.center = tuple(center)
+    assert layers.current_timepoint == 2
