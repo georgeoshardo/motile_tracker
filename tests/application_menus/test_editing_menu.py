@@ -203,9 +203,13 @@ def test_split_and_merge_button_states(
     assert editing_menu.merge_nodes_btn.isEnabled()
 
     click_node(tracks_viewer, 1)
-    click_node(tracks_viewer, 2, append=True)  # different frames
+    click_node(tracks_viewer, 2, append=True)  # one node per frame: nothing to merge
     editing_menu.update_buttons()
     assert not editing_menu.merge_nodes_btn.isEnabled()
+
+    click_node(tracks_viewer, 3, append=True)  # 2 and 3 share t=1: merged per frame
+    editing_menu.update_buttons()
+    assert editing_menu.merge_nodes_btn.isEnabled()
 
     # the buttons call the viewer's actions
     click_node(tracks_viewer, 2)

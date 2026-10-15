@@ -39,8 +39,9 @@ from motile_tracker.data_views.views_coordinator.groups import (
     CollectionWidget,
 )
 from motile_tracker.data_views.views_coordinator.node_edits import (
-    MergeNodes,
+    MergeNodesOverTime,
     SplitNode,
+    can_merge,
     propose_split,
 )
 from motile_tracker.data_views.views_coordinator.node_selection_history import (
@@ -909,19 +910,28 @@ class TracksViewer:
             show_info(note)
 
     def merge_nodes(self, event=None):
-        """Merge the selected nodes, which must share a time point, into one cell:
-        two masks that should have been one. One undo step.
+        """Merge the selected nodes into one cell per time point: two (or more)
+        masks that should have been one. Selections spanning several frames are
+        merged frame by frame, e.g. a cell cut in two over a stretch of frames.
+        One undo step.
         """
         if self.tracks is None or self.tracks.segmentation is None:
             return
         nodes = [int(n) for n in self.selected_nodes.as_list]
-        if len(nodes) < 2:
-            show_warning("Select two or more nodes at the same time point to merge.")
+        if not can_merge(self.tracks, nodes):
+            show_warning(
+                "Select two or more nodes in a time point to merge (shift-click the "
+                "pieces of each frame)."
+            )
             return
-        if len({int(self.tracks.get_time(n)) for n in nodes}) != 1:
-            show_warning("Only nodes at the same time point can be merged.")
-            return
-        action = MergeNodes(self.tracks, nodes)
+        action = MergeNodesOverTime(self.tracks, nodes)
+        if len(action.kept_nodes) > 1:
+            self.selected_nodes.add_list(action.kept_nodes)
+        if action.skipped_nodes:
+            show_info(
+                f"Left {len(action.skipped_nodes)} node(s) alone: they were the only "
+                f"selected node in their frame ({action.skipped_nodes})."
+            )
         for note in action.notes:
             show_info(note)
 

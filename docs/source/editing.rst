@@ -69,12 +69,18 @@ Merging nodes
 -------------
 
 The opposite mistake, two masks for one cell, is fixed by selecting the pieces
-(``SHIFT`` + click) and pressing ``J`` (or ``Merge [J]``). The pieces must be in
-the same frame. The piece that continues a track is kept (the largest one if
+(``SHIFT`` + click) and pressing ``J`` (or ``Merge [J]``). Pieces are merged
+with the other pieces of their own frame. The piece that continues a track is kept (the largest one if
 none does), the others are painted into it and removed, and the kept cell
 inherits their parent when it had none and their children while it has room for
 them. Links that cannot be carried over are reported in a notification. ``Z``
 undoes the merge in one step.
+
+A cell that was cut in two over several frames is fixed in one go: shift-click
+the pieces in every affected frame (in the kymograph they sit side by side) and
+press ``J``. The selection is merged frame by frame, earliest first, so the
+stretch becomes a single track again. Frames where only one node is selected are
+left alone and reported. ``Z`` undoes all the frames in one step.
 
 Editing edges
 *************
