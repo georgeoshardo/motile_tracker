@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
 )
 from superqt.fonticon import icon as qticon
 
+from motile_tracker.data_views.views_coordinator.node_edits import can_merge
 from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 if TYPE_CHECKING:
@@ -296,12 +297,11 @@ class EditingMenu(QWidget):
         )
 
     def _can_merge(self) -> bool:
-        """Two or more nodes of one time point are selected (with a segmentation)."""
-        tracks = self.tracks_viewer.tracks
-        nodes = self.tracks_viewer.selected_nodes.as_list
-        if tracks is None or tracks.segmentation is None or len(nodes) < 2:
-            return False
-        return len({int(tracks.get_time(n)) for n in nodes}) == 1
+        """Two or more nodes of some time point are selected (with a segmentation);
+        a selection over several frames is merged frame by frame."""
+        return can_merge(
+            self.tracks_viewer.tracks, self.tracks_viewer.selected_nodes.as_list
+        )
 
 
 class EditingSelectionWidget(QWidget):

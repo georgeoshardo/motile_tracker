@@ -22,6 +22,7 @@ history, so a single undo restores segmentation, edges and track ids together.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -466,3 +467,83 @@ class MergeNodes(ActionGroup):
         if _top_level:
             tracks.action_history.add_new_action(self)
             tracks.refresh.emit(kept)
+
+
+def group_by_time(tracks: Tracks, nodes: Sequence[int]) -> dict[int, list[int]]:
+    """The nodes per time point, in time order, without duplicates."""
+    groups: dict[int, list[int]] = {}
+    for node in dict.fromkeys(int(n) for n in nodes):
+        groups.setdefault(int(tracks.get_time(node)), []).append(node)
+    return dict(sorted(groups.items()))
+
+
+def can_merge(tracks: Tracks | None, nodes: Sequence[int]) -> bool:
+    """Whether the nodes include two or more at one time point (with a segmentation)."""
+    if tracks is None or tracks.segmentation is None or len(nodes) < 2:
+        return False
+    return any(len(group) >= 2 for group in group_by_time(tracks, nodes).values())
+
+
+class MergeNodesOverTime(ActionGroup):
+    """Merge selected nodes frame by frame, as one undo step.
+
+    For a cell that the segmentation cut into two pieces over several frames: the
+    pieces selected at each time point are merged into one cell with
+    :class:`MergeNodes`, earliest frame first, so each merge sees the links left by
+    the one before and the result is a single track through the stretch. Time
+    points with only one selected node are left alone and reported in
+    ``skipped_nodes``.
+
+    Attributes:
+        merges (list[MergeNodes]): One merge per time point, in time order.
+        kept_nodes (list[int]): The node remaining at each merged time point.
+        removed_nodes (list[int]): All nodes merged away.
+        skipped_nodes (list[int]): Selected nodes alone at their time point.
+        notes (list[str]): Links that could not be carried over.
+    """
+
+    def __init__(self, tracks: Tracks, nodes: Sequence[int], _top_level: bool = True):
+        super().__init__(tracks, actions=[])
+        self.tracks: Tracks
+        if tracks.segmentation is None:
+            raise InvalidActionError("Cannot merge nodes without a segmentation.")
+        groups = group_by_time(tracks, nodes)
+        frames = {t: group for t, group in groups.items() if len(group) >= 2}
+        if not frames:
+            raise InvalidActionError(
+                "Select two or more nodes in at least one time point to merge."
+            )
+        self.skipped_nodes = [
+            group[0] for t, group in groups.items() if len(group) == 1
+        ]
+        self.merges: list[MergeNodes] = []
+        try:
+            for group in frames.values():
+                merge = MergeNodes(tracks, group, _top_level=False)
+                self.merges.append(merge)
+                self.actions.append(merge)
+        except Exception:
+            for action in reversed(self.actions):
+                action.inverse()
+            raise
+        self.kept_nodes = [merge.kept_node for merge in self.merges]
+        self.removed_nodes = [n for merge in self.merges for n in merge.removed_nodes]
+        # a note about a node merged away in a later frame is no longer true
+        removed = {str(n) for n in self.removed_nodes}
+        self.notes = list(
+            dict.fromkeys(
+                note
+                for merge in self.merges
+                for note in merge.notes
+                if not removed & set(_numbers(note))
+            )
+        )
+        if _top_level:
+            tracks.action_history.add_new_action(self)
+            tracks.refresh.emit(
+                self.kept_nodes[0] if len(self.kept_nodes) == 1 else None
+            )
+
+
+def _numbers(text: str) -> list[str]:
+    return re.findall(r"\d+", text)

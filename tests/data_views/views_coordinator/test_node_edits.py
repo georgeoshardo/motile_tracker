@@ -400,3 +400,84 @@ class TestNewLabelAfterDeletion:
         assert tracks.graph.has_node(new)
         assert tracks.get_time(new) == 3
         tracks_viewer.set_view_mode("spatial")
+
+
+class TestMergeOverTime:
+    """A cell cut in two over several frames is merged frame by frame in one step."""
+
+    def _over_segment(self, tracks):
+        """Split node 3 (t1) and node 4 (t2) of the track 3 -> 4 -> 5."""
+        masks = {n: node_mask(tracks, n) for n in (3, 4)}
+        pairs = []
+        for node in (3, 4):
+            action = SplitNode(tracks, propose_split(tracks, node))
+            pairs.append((node, action.new_node))
+        return masks, pairs
+
+    def test_can_merge_needs_two_nodes_in_some_frame(self, tracks_viewer_setup):
+        from motile_tracker.data_views.views_coordinator.node_edits import can_merge
+
+        _, _, tracks = tracks_viewer_setup
+        assert can_merge(tracks, [2, 3])  # both t1
+        assert can_merge(tracks, [2, 3, 4])  # t1 pair plus a lone t2 node
+        assert not can_merge(tracks, [1, 2, 4])  # one node per frame
+        assert not can_merge(tracks, [2])
+        assert not can_merge(None, [2, 3])
+
+    def test_merge_pairs_over_frames_in_one_step(self, tracks_viewer_setup):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        masks, pairs = self._over_segment(tracks)
+        split_state = _snapshot(tracks)
+        history = len(tracks.action_history.undo_stack)
+
+        tracks_viewer.selected_nodes.add_list([n for pair in pairs for n in pair])
+        tracks_viewer.merge_nodes()
+
+        assert len(tracks.action_history.undo_stack) == history + 1
+        frame1 = np.asarray(tracks.segmentation[1])
+        frame2 = np.asarray(tracks.segmentation[2])
+        kept = [n for n in tracks.graph.node_ids() if tracks.get_time(n) in (1, 2)]
+        kept = sorted(int(n) for n in kept if n != 2)  # node 2 is the sister of 3
+        assert len(kept) == 2
+        # one cell per frame again, with the original masks
+        assert np.array_equal(frame1 == kept[0], masks[3])
+        assert np.array_equal(frame2 == kept[1], masks[4])
+        # and one track through the stretch: kept(t1) -> kept(t2) -> 5
+        assert [int(c) for c in tracks.successors(kept[0])] == [kept[1]]
+        assert [int(c) for c in tracks.successors(kept[1])] == [5]
+        assert tracks.get_track_id(kept[0]) == tracks.get_track_id(5)
+        # both merged cells are selected afterwards
+        assert set(tracks_viewer.selected_nodes.as_list) == set(kept)
+
+        tracks_viewer.undo()
+        assert _snapshot(tracks) == split_state
+
+    def test_lone_nodes_are_left_alone_and_reported(self, tracks_viewer_setup):
+        from motile_tracker.data_views.views_coordinator.node_edits import (
+            MergeNodesOverTime,
+        )
+
+        _, _, tracks = tracks_viewer_setup
+        action = MergeNodesOverTime(tracks, [2, 3, 1, 6])
+        assert action.skipped_nodes == [1, 6]  # alone at t0 and t4
+        assert len(action.kept_nodes) == 1
+        assert tracks.graph.has_node(1) and tracks.graph.has_node(6)
+
+    def test_nothing_to_merge_is_refused(self, tracks_viewer_setup):
+        from funtracks.exceptions import InvalidActionError
+
+        from motile_tracker.data_views.views_coordinator.node_edits import (
+            MergeNodesOverTime,
+        )
+
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        with pytest.raises(InvalidActionError):
+            MergeNodesOverTime(tracks, [1, 2, 4])
+        before = _snapshot(tracks)
+        tracks_viewer.selected_nodes.add_list([1, 2, 4])
+        with patch(
+            "motile_tracker.data_views.views_coordinator.tracks_viewer.show_warning"
+        ) as warning:
+            tracks_viewer.merge_nodes()
+        warning.assert_called_once()
+        assert _snapshot(tracks) == before
