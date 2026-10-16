@@ -481,3 +481,47 @@ class TestMergeOverTime:
             tracks_viewer.merge_nodes()
         warning.assert_called_once()
         assert _snapshot(tracks) == before
+
+
+class TestEditsKeepTheView:
+    """Split, merge, undo and redo select the edited cells without moving the
+    camera, in the spatial and the kymograph view."""
+
+    @pytest.mark.parametrize("mode", ["spatial", "kymograph"])
+    def test_split_merge_undo_redo_do_not_move_the_camera(
+        self, tracks_viewer_setup, mode
+    ):
+        viewer, tracks_viewer, tracks = tracks_viewer_setup
+        assert tracks_viewer.set_view_mode(mode)
+        if mode == "kymograph":
+            tracks_viewer.kymograph_layers.show_opening_view(deferred=False)
+        center = list(viewer.camera.center)
+        center[-2] += 13.0
+        center[-1] += 7.0
+        viewer.camera.center = tuple(center)
+        zoom = viewer.camera.zoom
+
+        def assert_view_unchanged():
+            assert viewer.camera.center == pytest.approx(tuple(center))
+            assert viewer.camera.zoom == pytest.approx(zoom)
+
+        tracks_viewer.selected_nodes.add(4)
+        viewer.camera.center = tuple(center)  # selecting alone may centre; reset
+
+        tracks_viewer.split_node()
+        assert len(tracks_viewer.selected_nodes) == 2
+        assert_view_unchanged()
+
+        tracks_viewer.undo()
+        assert_view_unchanged()
+        tracks_viewer.redo()
+        assert_view_unchanged()
+
+        tracks_viewer.selected_nodes.add_list([2, 3])
+        viewer.camera.center = tuple(center)
+        tracks_viewer.merge_nodes()
+        assert len(tracks_viewer.selected_nodes) == 1  # the kept cell
+        assert_view_unchanged()
+        tracks_viewer.undo()
+        assert_view_unchanged()
+        tracks_viewer.set_view_mode("spatial")

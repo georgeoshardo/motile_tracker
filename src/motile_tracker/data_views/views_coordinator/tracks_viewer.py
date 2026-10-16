@@ -903,9 +903,12 @@ class TracksViewer:
         if plan is None:
             show_warning(f"Node {node} is too small to split.")
             return
-        action = SplitNode(self.tracks, plan)
-        # the refresh selected the new cell; show both halves
-        self.selected_nodes.add(node, append=True)
+        # the view stays where the user is working: selecting the edited cells
+        # must not re-centre it
+        with self.selection_updates(set_view=False):
+            action = SplitNode(self.tracks, plan)
+            # the refresh selected the new cell; show both halves
+            self.selected_nodes.add(node, append=True)
         for note in action.notes:
             show_info(note)
 
@@ -924,9 +927,10 @@ class TracksViewer:
                 "pieces of each frame)."
             )
             return
-        action = MergeNodesOverTime(self.tracks, nodes)
-        if len(action.kept_nodes) > 1:
-            self.selected_nodes.add_list(action.kept_nodes)
+        with self.selection_updates(set_view=False):  # keep the view where it is
+            action = MergeNodesOverTime(self.tracks, nodes)
+            if len(action.kept_nodes) > 1:
+                self.selected_nodes.add_list(action.kept_nodes)
         if action.skipped_nodes:
             show_info(
                 f"Left {len(action.skipped_nodes)} node(s) alone: they were the only "
@@ -938,12 +942,14 @@ class TracksViewer:
     def undo(self, event=None):
         if self.tracks is None:
             return
-        self.tracks.undo()
+        with self.selection_updates(set_view=False):  # keep the view where it is
+            self.tracks.undo()
 
     def redo(self, event=None):
         if self.tracks is None:
             return
-        self.tracks.redo()
+        with self.selection_updates(set_view=False):  # keep the view where it is
+            self.tracks.redo()
 
     def hide_panels(self, event=None):
         """Show/hide menu and tree view panels without destroying"""
