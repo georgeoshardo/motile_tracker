@@ -842,6 +842,16 @@ class TracksViewer:
 
             node1, node2 = int(node1), int(node2)
 
+            if time1 == time2:
+                QMessageBox.warning(
+                    None,
+                    "Cannot add edge",
+                    f"Nodes {node1} and {node2} are both in frame {time1}. An edge "
+                    "goes from one frame to a later one; to join two pieces of one "
+                    "cell, merge them instead.",
+                )
+                return
+
             if self.tracks.graph.out_degree(node1) >= 2:
                 QMessageBox.warning(
                     None,

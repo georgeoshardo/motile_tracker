@@ -106,6 +106,8 @@ class EditSession:
         self.store = store
         self.path = store.path
         self.error = None
+        # Why the newest revision is not in the GEFF, while the gate refuses it.
+        self.rejected = None
         self.closed = False
         self._dirty_nodes = set()
         self._action_cache = {}
@@ -113,6 +115,7 @@ class EditSession:
             max_workers=1, thread_name_prefix="geff-save"
         )
         self._future = None
+        self._publishing = None
         self.revision, self._state, self._history = store.read()
         self._attach()
 
@@ -242,6 +245,7 @@ class EditSession:
         # Coalesce rapid edits. The next status poll/flush schedules the newest
         # revision after this worker finishes; no live graph crosses threads.
         if self._future is None:
+            self._publishing = self.revision
             self._future = self._executor.submit(publish, self.path)
 
     def poll(self):
@@ -252,16 +256,25 @@ class EditSession:
                 self.store.set_metadata("projected_revision", revision)
                 (self.path / "edit_history" / "publishing").unlink(missing_ok=True)
                 self._future = None
+                self.rejected = None
                 if revision < self.revision:
+                    self._request_projection()
+            except sf.PublicationRejected as exc:
+                # The history keeps the edit and the files keep the last revision
+                # that passed. Editing goes on, so the edit can be undone or fixed;
+                # the next revision that passes is published.
+                self.rejected = str(exc)
+                self._future = None
+                if self._publishing < self.revision:
                     self._request_projection()
             except Exception as exc:  # noqa: BLE001 -- worker errors become a visible stopped state
                 self.error = f"History saved, but GEFF update failed: {exc}"
                 self._future = None
-        return (
-            "Autosave stopped"
-            if self.error
-            else ("Saving…" if self._future else "Saved")
-        )
+        if self.error:
+            return "Autosave stopped"
+        if self._future:
+            return "Saving…"
+        return "Not written to the GEFF" if self.rejected else "Saved"
 
     def flush(self):
         while self._future is not None:
@@ -426,6 +439,10 @@ class PendingSession:
     @property
     def error(self):
         return self._session.error if self._session else self._error
+
+    @property
+    def rejected(self):
+        return self._session.rejected if self._session else None
 
     def poll(self):
         if self._session is not None:

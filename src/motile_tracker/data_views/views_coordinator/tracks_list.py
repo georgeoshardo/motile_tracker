@@ -11,6 +11,7 @@ from fonticon_fa6 import FA6S
 from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.import_export import import_from_geff
 from napari._qt.qt_resources import QColoredSVGIcon
+from napari.utils.notifications import show_warning
 from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -184,6 +185,7 @@ class TracksList(QGroupBox):
         # the full width of the dock.
         self._save_name_edited = False
         self._sessions = {}
+        self._reported_rejections = {}
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(250)
         self._status_timer.timeout.connect(self._update_autosave_status)
@@ -377,17 +379,37 @@ class TracksList(QGroupBox):
         for session in self._sessions.values():
             if not session.closed:
                 session.poll()
+                self._report_rejection(session)
         selected = self.tracks_list.selectedItems()
         if selected:
             tracks = self.tracks_list.itemWidget(selected[0]).tracks
             session = getattr(tracks, "edit_session", None)
             if session:
-                self.autosave_status.setText(
-                    f"Autosave stopped: {session.error}"
-                    if session.error
-                    else f"{session.poll()} · revision {session.revision}\n{session.path}"
-                )
+                if session.error:
+                    text = f"Autosave stopped: {session.error}"
+                elif session.rejected:
+                    text = (
+                        f"Revision {session.revision} is in the history but not in "
+                        f"the GEFF. {session.rejected}\nUndo or fix the edit; the "
+                        "GEFF is written again once the tracks pass."
+                    )
+                else:
+                    text = (
+                        f"{session.poll()} · revision {session.revision}\n{session.path}"
+                    )
+                self.autosave_status.setText(text)
                 self.autosave_status.setToolTip(str(session.path))
+
+    def _report_rejection(self, session):
+        # Once per refusal, not on every poll.
+        if session.rejected and session.rejected != self._reported_rejections.get(
+            session.path
+        ):
+            show_warning(
+                f"This edit was not written to the GEFF. {session.rejected}. Undo "
+                "or fix it; the GEFF is written again once the tracks pass."
+            )
+        self._reported_rejections[session.path] = session.rejected
 
     def close_sessions(self):
         # Also called after C++ widget destruction; use only Python state here.

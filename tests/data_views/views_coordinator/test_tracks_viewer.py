@@ -167,6 +167,25 @@ class TestEdgeOperations:
         # Edge must go from earlier (2) to later (6), regardless of selection order
         assert tracks.graph.has_edge(2, 6)
 
+    def test_create_edge_refuses_nodes_in_one_frame(self, viewer, graph_2d, click_node):
+        """Nodes 5 and 6 are both at t4. Funtracks would link them; an edge
+        must go forward in time, so create_edge warns and changes nothing."""
+        tracks = MotileRun(graph=graph_2d, run_name="test", ndim=3, time_attr="t")
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=tracks, name="test")
+        edges = {tuple(e) for e in tracks.graph.edge_list()}
+
+        click_node(tracks_viewer, 5)
+        click_node(tracks_viewer, 6, append=True)
+        with patch(
+            "motile_tracker.data_views.views_coordinator.tracks_viewer.QMessageBox.warning"
+        ) as warning:
+            tracks_viewer.create_edge()
+
+        warning.assert_called_once()
+        assert "both in frame 4" in warning.call_args.args[2]
+        assert {tuple(e) for e in tracks.graph.edge_list()} == edges
+
     def test_create_edge_with_force(self, viewer, graph_2d, monkeypatch, click_node):
         """Test create_edge handles forceable errors by retrying with force=True.
 

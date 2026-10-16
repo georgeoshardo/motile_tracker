@@ -438,23 +438,52 @@ def test_reopening_does_not_rewrite_the_files(archive, tmp_path):
     assert not any("nodes/" in k or "segmentation" in k for k in changed)
 
 
-def test_a_rejected_publication_leaves_the_files_and_stops_autosave(
-    archive, tmp_path, monkeypatch
-):
+def test_a_rejected_publication_leaves_the_files_and_can_be_undone(archive, tmp_path):
     geff, _ = archive
     before = {k: v for k, v in files(geff.parent).items() if "edit_history" not in k}
     session, tracks = open_for_editing(geff, tmp_path)
-    monkeypatch.setattr(sf, "check", lambda *args, **kwargs: ["boom"])
 
-    UserDeleteNode(tracks, internal(9))
-    with pytest.raises(RuntimeError, match="boom"):
-        session.flush()
-    assert session.poll() == "Autosave stopped"
-    with pytest.raises(RuntimeError):
-        session.close()
-
+    # 5 and 9 are both in frame 4. Funtracks makes the link; the gate refuses it.
+    UserAddEdge(tracks, (internal(5), internal(9)))
+    session.flush()
+    assert "forward in time" in session.rejected
+    assert session.error is None
+    assert session.poll() == "Not written to the GEFF"
+    session.close()
     after = {k: v for k, v in files(geff.parent).items() if "edit_history" not in k}
     assert after == before
+
+    # Reopening (as the app does) is refused the same way, and the edit can be undone.
+    tracks = load_geff_group(geff).tracks
+    session = tracks.edit_session
+    assert "forward in time" in session.rejected
+    tracks.action_history.undo()
+    session.flush()
+    assert session.rejected is None
+    assert session.poll() == "Saved"
+    session.close()
+    _, _, edges, _ = published(geff)
+    assert (5, 9) not in edges
+    validate(geff)
+
+
+def test_edits_after_a_rejected_publication_are_published(archive, tmp_path):
+    geff, _ = archive
+    session, tracks = open_for_editing(geff, tmp_path)
+    UserAddEdge(tracks, (internal(5), internal(9)))
+    session.flush()
+    assert session.rejected
+
+    # Removing the bad link by hand, rather than undoing it, also clears the refusal.
+    UserDeleteEdge(tracks, (internal(5), internal(9)))
+    UserDeleteNode(tracks, internal(12))
+    session.flush()
+    session.close()
+    assert session.rejected is None
+    ids, _, edges, _ = published(geff)
+    assert 12 not in ids
+    assert (5, 9) not in edges
+    validate(geff)
 
 
 def test_read_only_dataset_is_edited_in_a_working_copy(archive, tmp_path):
