@@ -228,8 +228,8 @@ def node_name_map_from_metadata(
     """Map funtracks' standard node keys to this geff's property names.
 
     Uses the typed ``axes`` (time / space) for ``time`` and ``pos``, the
-    ``track_node_props`` for ``track_id`` and ``lineage_id``, and the labels'
-    ``label_prop`` for ``seg_id``. Only properties that exist in the geff are
+    ``track_node_props`` lineage for ``lineage_id``, and the labels'
+    ``label_prop`` for ``seg_id``. Tracklets are left to funtracks. Only properties that exist in the geff are
     mapped, so funtracks can fall back to its own inference for the rest.
     """
     props = set(metadata.node_props_metadata or {})
@@ -244,8 +244,10 @@ def node_name_map_from_metadata(
         name_map["pos"] = space_axes  # geff axes are listed in array order
 
     track_props = metadata.track_node_props or {}
-    if track_props.get("tracklet") in props:
-        name_map["track_id"] = track_props["tracklet"]
+    # Tracklets are not imported: funtracks derives them from the links (and keeps
+    # them up to date while editing), and the dataset's own tracklet numbers are
+    # kept by the autosave format (see persistence.source_format). Mapping them to
+    # a key funtracks does not maintain would leave a stale copy in the graph.
     if track_props.get("lineage") in props:
         name_map["lineage_id"] = track_props["lineage"]
 

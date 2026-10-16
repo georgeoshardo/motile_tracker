@@ -98,25 +98,22 @@ class Store:
             if version not in (1, SCHEMA_VERSION):
                 raise ValueError(f"Unsupported edit-history version {version}")
             if not readonly:
+                # Recorded with the session's first edit: opening a dataset to look
+                # at it must not change its files, the history included.
                 self.session_id = uuid4().hex
-                self.connection.execute(
-                    "INSERT INTO sessions VALUES (?,?)",
-                    (
-                        self.session_id,
-                        dumps(
-                            {
-                                name: package_version(name)
-                                for name in (
-                                    "motile-tracker",
-                                    "funtracks",
-                                    "tracksdata",
-                                    "geff",
-                                    "zarr",
-                                )
-                            }
-                        ),
-                    ),
+                self._session_versions = dumps(
+                    {
+                        name: package_version(name)
+                        for name in (
+                            "motile-tracker",
+                            "funtracks",
+                            "tracksdata",
+                            "geff",
+                            "zarr",
+                        )
+                    }
                 )
+                self._session_recorded = False
         except BaseException:
             self.close()
             if owns_new_database:
@@ -154,6 +151,11 @@ class Store:
                 raise ValueError(f"Unsupported edit-history version {version}")
             if version == 1:
                 conn.execute("PRAGMA user_version=2")
+            if not self._session_recorded:
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions VALUES (?,?)",
+                    (self.session_id, self._session_versions),
+                )
             revision = conn.execute(
                 "SELECT COALESCE(MAX(id),-1)+1 FROM revisions"
             ).fetchone()[0]
@@ -222,6 +224,7 @@ class Store:
                 ),
             )
             conn.execute("COMMIT")
+            self._session_recorded = True
             self._action_records.update(new_action_records)
             return revision
         except BaseException:
