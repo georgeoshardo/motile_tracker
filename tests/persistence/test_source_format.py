@@ -631,3 +631,26 @@ def test_attach_format_records_nothing_unless_every_dataset_matches(archive, tmp
     for trench in ("trench_a", "trench_b"):
         with Store(store / trench / "tracking_graph.geff", readonly=True) as s:
             assert s.metadata("source_format") is None
+
+
+def test_release_commands_leave_datasets_without_history_alone(archive, tmp_path):
+    geff, pristine = archive
+    store = geff.parent.parent
+    write_trench(store / "trench_b", break_tracklet=False)  # never edited
+    untouched = files(store / "trench_b")
+    tracks = load_geff_group(geff).tracks
+    with EditSession.create(tracks, geff, source_format=None) as session:
+        UserDeleteNode(session.tracks, internal(9))
+        session.flush()
+
+    assert (
+        release.main(
+            ["attach-format", str(store), "--reference", str(pristine.parent.parent)]
+        )
+        == 0
+    )
+    assert release.main(["republish", str(store)]) == 0
+
+    validate(geff)
+    assert files(store / "trench_b") == untouched
+    assert not has_history(store / "trench_b" / "tracking_graph.geff")
