@@ -92,10 +92,10 @@ def test_node_name_map_from_metadata(geff_collection_store):
 
     name_map = node_name_map_from_metadata(metadata, label_prop="seg_id")
 
+    # tracklets are derived by funtracks, not imported (they would go stale)
     assert name_map == {
         "time": "time",
         "pos": ["y", "x"],
-        "track_id": "tracklet",
         "lineage_id": "lineage",
         "seg_id": "seg_id",
     }

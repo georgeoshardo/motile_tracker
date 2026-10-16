@@ -5,29 +5,46 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import zarr
 
+from . import source_format
 from .state import restore
 from .store import Store
 
+# Signatures that also cover the label array carry this prefix; older ones cover
+# the graph only and are still accepted for the datasets that recorded them.
+LABELS_SIGNATURE = "v2:"
 
-def graph_signature(path):
-    """Detect content changes without rejecting copies with new file timestamps."""
+
+def graph_signature(path, labels=None):
+    """Detect content changes without rejecting copies with new file timestamps.
+
+    With `labels` (the dataset's label array) the signature covers that array too.
+    """
     path = Path(path)
     digest = hashlib.sha256()
-    for member in ("nodes", "edges", ".zattrs", "zarr.json"):
-        target = path / member
+    targets = [(path, member) for member in ("nodes", "edges", ".zattrs", "zarr.json")]
+    if labels is not None:
+        targets.append((Path(labels).parent, Path(labels).name))
+    for base, member in targets:
+        target = base / member
         files = sorted(target.rglob("*")) if target.is_dir() else [target]
         for file in files:
             if file.is_file():
-                digest.update(str(file.relative_to(path)).encode())
+                digest.update(str(file.relative_to(base)).encode())
                 with file.open("rb") as handle:
                     while chunk := handle.read(1024 * 1024):
                         digest.update(chunk)
-    return digest.hexdigest()
+    return (LABELS_SIGNATURE if labels is not None else "") + digest.hexdigest()
+
+
+def dataset_signature(path, fmt):
+    """The signature of a dataset: graph, plus label array if its format has one."""
+    return graph_signature(path, source_format.labels_path(path, fmt))
 
 
 def check_external_change(store):
@@ -40,7 +57,14 @@ def check_external_change(store):
             return  # An interrupted publication can be rebuilt from the journal.
         expected = lines[1]
     intact = all((path / name).is_dir() for name in ("nodes", "edges"))
-    if expected and intact and graph_signature(path) != expected:
+    if not (expected and intact):
+        return
+    if expected.startswith(LABELS_SIGNATURE):
+        labels = source_format.labels_path(path, store.metadata("source_format"))
+        current = graph_signature(path, labels)
+    else:
+        current = graph_signature(path)
+    if current != expected:
         raise ValueError(
             "GEFF changed outside this editing session; keep it intact and resolve the separate edits"
         )
@@ -118,6 +142,9 @@ def publish(path):
         revision, state, _ = source.read(include_history=False)
         tracks = restore(state, source.get_blob)
         original_attrs = source.metadata("original_attrs", {})
+        fmt = source.metadata("source_format")
+    if fmt is not None:
+        return publish_in_source_format(path, tracks, fmt, revision)
     zarr_format = 3 if (path / "zarr.json").exists() else 2
     with TemporaryDirectory(prefix="motile-projection-", dir=path.parent) as temporary:
         staged = Path(temporary) / "tracks.geff"
@@ -173,5 +200,55 @@ def publish(path):
             else:
                 os.replace(member, target)
         signature = graph_signature(path)
+        marker.write_text(f"{revision}\n{signature}")
+        return revision, signature
+
+
+def publish_in_source_format(path, tracks, fmt, revision):
+    """Publish a dataset in the format it arrived in (see :mod:`.source_format`).
+
+    The graph and the label array are written to staging directories next to
+    their targets and checked by the gate; only then do they replace the
+    published ones. A rejected publication leaves the previous one in place and
+    raises :class:`~.source_format.PublicationRejected`.
+    """
+    path = Path(path)
+    labels_target = source_format.labels_path(path, fmt)
+    with (
+        TemporaryDirectory(prefix=".motile-publish-", dir=path.parent) as staging,
+        TemporaryDirectory(prefix=".motile-labels-", dir=labels_target.parent)
+        if labels_target is not None
+        else nullcontext() as label_staging,
+    ):
+        staged = Path(staging) / path.name
+        staged_labels = (
+            Path(label_staging) / labels_target.name
+            if labels_target is not None
+            else None
+        )
+        content = source_format.write(tracks, fmt, staged, staged_labels)
+        problems = source_format.check(staged, staged_labels, fmt, content)
+        if problems:
+            raise source_format.PublicationRejected(problems)
+        with Store(path, readonly=True) as source:
+            check_external_change(source)
+        # Mark before replacing anything. A killed writer leaves this recoverable
+        # marker; reopening can distinguish interrupted publication from outsiders.
+        marker = path / "edit_history" / "publishing"
+        with marker.open("w") as handle:
+            handle.write(str(revision))
+            handle.flush()
+            os.fsync(handle.fileno())
+        for member in staged.iterdir():
+            target = path / member.name
+            if member.is_dir() and target.exists():
+                shutil.rmtree(target)
+            os.replace(member, target)
+        if labels_target is not None:
+            previous = Path(label_staging) / "previous"
+            if labels_target.exists():
+                os.replace(labels_target, previous)
+            os.replace(staged_labels, labels_target)
+        signature = graph_signature(path, labels_target)
         marker.write_text(f"{revision}\n{signature}")
         return revision, signature
