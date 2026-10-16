@@ -226,7 +226,8 @@ def main(argv=None):
     store = args.store.resolve()
     if args.command == "attach-format":
         reference_root = args.reference.resolve()
-        geffs = find_geffs(store)
+        geffs = [g for g in find_geffs(store) if history_path(g).is_file()]
+        skipped = len(find_geffs(store)) - len(geffs)
         # check every dataset before recording anything
         formats = {}
         for geff in geffs:
@@ -240,9 +241,12 @@ def main(argv=None):
                 continue
             record_format(geff, fmt)
             results["recorded"] += 1
+        if skipped:
+            # never edited: still in their original format, which a session keeps
+            results["no history (left as is)"] = skipped
         print(dict(results))
     elif args.command == "republish":
-        geffs = find_geffs(store)
+        geffs = [g for g in find_geffs(store) if history_path(g).is_file()]
         for geff in geffs:  # all or nothing
             _require_format(geff)
         for geff in geffs:
