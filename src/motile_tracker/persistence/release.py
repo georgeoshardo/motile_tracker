@@ -48,29 +48,53 @@ def _initial_tracks(store):
     return restore(store.state_at(0), store.get_blob)
 
 
-def attach_format(geff, reference):
-    """Record `reference`'s format in `geff`'s history (see module docs)."""
+def verify_format(geff, reference):
+    """The format of `reference`, checked against the start of `geff`'s history.
+
+    Returns None if `geff` already has a format recorded. Raises if the history
+    does not start from exactly the reference dataset (ids, times and masks).
+    """
     geff, reference = Path(geff), Path(reference)
-    with Store(geff) as store:
+    with Store(geff, readonly=True) as store:
         if store.metadata("source_format") is not None:
-            return "already recorded"
+            return None
         tracks = _initial_tracks(store)
-        # The dataset is laid out like the reference, so the reference's relative
-        # paths (e.g. ../segmentation) name the dataset's own arrays.
-        fmt = sf.capture(reference, tracks)
-        labels = sf.labels_path(geff, fmt)
-        if fmt.get("labels") and (labels is None or not labels.exists()):
-            raise FileNotFoundError(
-                f"{geff}: label array {fmt['labels']['path']} not found"
-            )
+    # The dataset is laid out like the reference, so the reference's relative
+    # paths (e.g. ../segmentation) name the dataset's own arrays.
+    fmt = sf.capture(reference, tracks)
+    labels = sf.labels_path(geff, fmt)
+    if fmt.get("labels") and (labels is None or not labels.exists()):
+        raise FileNotFoundError(
+            f"{geff}: label array {fmt['labels']['path']} not found"
+        )
+    return fmt
+
+
+def record_format(geff, fmt):
+    with Store(geff) as store:
         store.set_metadata("source_format", fmt)
         # The published files are about to be rebuilt in this format.
         store.set_metadata("projected_revision", -1)
+
+
+def attach_format(geff, reference):
+    """Record `reference`'s format in `geff`'s history (see module docs)."""
+    fmt = verify_format(geff, reference)
+    if fmt is None:
+        return "already recorded"
+    record_format(geff, fmt)
     return "recorded"
+
+
+def _require_format(geff):
+    with Store(geff, readonly=True) as store:
+        if store.metadata("source_format") is None:
+            raise ValueError(f"{geff}: no recorded format; run attach-format first")
 
 
 def republish(geff):
     geff = Path(geff)
+    _require_format(geff)
     revision, signature = publish(geff)
     with Store(geff) as store:
         store.set_metadata("graph_signature", signature)
@@ -199,24 +223,29 @@ def main(argv=None):
     out.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
 
+    store = args.store.resolve()
     if args.command == "attach-format":
-        geffs = find_geffs(args.store)
         reference_root = args.reference.resolve()
-        results = Counter()
+        geffs = find_geffs(store)
+        # check every dataset before recording anything
+        formats = {}
         for geff in geffs:
-            relative = (
-                geff.relative_to(args.store.resolve())
-                if geff != args.store.resolve()
-                else Path()
-            )
+            relative = geff.relative_to(store)
             reference = reference_root / relative if relative.parts else reference_root
-            results[attach_format(geff, reference)] += 1
-            print(
-                f"{geff.parent.name if relative.parts else geff.name}: format recorded"
-            )
+            formats[geff] = verify_format(geff, reference)
+        results = Counter()
+        for geff, fmt in formats.items():
+            if fmt is None:
+                results["already recorded"] += 1
+                continue
+            record_format(geff, fmt)
+            results["recorded"] += 1
         print(dict(results))
     elif args.command == "republish":
-        for geff in find_geffs(args.store):
+        geffs = find_geffs(store)
+        for geff in geffs:  # all or nothing
+            _require_format(geff)
+        for geff in geffs:
             revision = republish(geff)
             print(f"{geff.parent.name}: republished revision {revision}")
     else:

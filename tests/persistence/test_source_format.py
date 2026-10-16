@@ -589,3 +589,45 @@ def test_export_writes_a_release_without_histories_or_extra(archive, tmp_path):
     assert by_name["trench_b"]["cells_removed"] == 0
     assert by_name["trench_b"]["cells_with_new_tracklet_number"] == 0
     assert report.read_text().splitlines()[0].startswith("dataset,")
+
+
+def test_release_commands_with_relative_paths(archive, tmp_path, monkeypatch):
+    geff, pristine = archive
+    tracks = load_geff_group(geff).tracks
+    with EditSession.create(tracks, geff, source_format=None) as session:
+        UserDeleteNode(session.tracks, internal(9))
+        session.flush()
+    monkeypatch.chdir(tmp_path)
+    store = Path(geff.parent.parent.name)
+    reference = Path(pristine.parent.parent.name)
+
+    with pytest.raises(ValueError, match="no recorded format"):
+        release.main(["republish", str(store)])
+    assert (
+        release.main(["attach-format", str(store), "--reference", str(reference)]) == 0
+    )
+    assert release.main(["republish", str(store)]) == 0
+    validate(geff)
+    assert release.main(["export", str(store), "out.zarr", "--drop-extra"]) == 0
+    assert (tmp_path / "out.zarr" / "trench_a" / "segmentation").is_dir()
+
+
+def test_attach_format_records_nothing_unless_every_dataset_matches(archive, tmp_path):
+    from motile_tracker.persistence.store import Store
+
+    geff, pristine = archive
+    store = geff.parent.parent
+    write_trench(store / "trench_b", break_tracklet=False)
+    for trench in ("trench_a", "trench_b"):
+        path = store / trench / "tracking_graph.geff"
+        EditSession.create(
+            load_geff_group(path).tracks, path, source_format=None
+        ).close()
+    # the reference holds trench_a only
+    with pytest.raises(sf.UnsupportedFormat):
+        release.main(
+            ["attach-format", str(store), "--reference", str(pristine.parent.parent)]
+        )
+    for trench in ("trench_a", "trench_b"):
+        with Store(store / trench / "tracking_graph.geff", readonly=True) as s:
+            assert s.metadata("source_format") is None
