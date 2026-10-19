@@ -79,7 +79,18 @@ def _group(path):
     zarr.open_group(str(path), mode="w", zarr_format=2)
 
 
-def write_trench(group: Path, *, break_tracklet: bool):
+ARCHIVE_AXES = {
+    "axis_names": ["time", "y", "x"],
+    "axis_types": ["time", "space", "space"],
+}
+RAW_AXES = {"axis_names": ["time", "y", "x"]}
+
+
+def write_trench(group: Path, *, break_tracklet: bool, raw: bool = False):
+    """A trench in the archive's layout, or with ``raw`` in the layout of the raw
+    Trackastra export: 32-bit time, label and positions, node and link
+    ``weight`` properties, another property order, its own ``extra``, no
+    ``axis_types`` on the arrays, and a ``_COMPLETE.json`` export marker."""
     group.mkdir(parents=True)
     (group / "zarr.json").write_text(
         json.dumps({"attributes": {}, "zarr_format": 3, "node_type": "group"}, indent=2)
@@ -95,6 +106,7 @@ def write_trench(group: Path, *, break_tracklet: bool):
         zarr_format=3,
         compressors=zarr.codecs.ZstdCodec(level=0, checksum=False),
         fill_value=0,
+        attributes=RAW_AXES if raw else ARCHIVE_AXES,
     )
     seg[...] = labels
     images = zarr.create_array(
@@ -103,6 +115,7 @@ def write_trench(group: Path, *, break_tracklet: bool):
         chunks=labels.shape,
         dtype="float32",
         zarr_format=3,
+        attributes=RAW_AXES if raw else ARCHIVE_AXES,
     )
     images[...] = 100.0 - labels.astype(np.float32)
 
@@ -123,21 +136,45 @@ def write_trench(group: Path, *, break_tracklet: bool):
         for n in (11, 12):
             tracklet[STORED_ORDER.index(n)] = CELLS[8][4]
     lineage = np.asarray([CELLS[n][5] for n in STORED_ORDER], dtype=np.int64)
-    props = {
-        "tracklet": tracklet,
-        "seg_id": seg_id,
-        "coords": np.stack([y, x], axis=1),
-        "x": x,
-        "y": y,
-        "lineage": lineage,
-        "label": seg_id.copy(),
-        "time": t,
-    }
+    if raw:
+        t, y, x = t.astype(np.int32), y.astype(np.float32), x.astype(np.float32)
+        props = {
+            "tracklet": tracklet,
+            "x": x,
+            "coords": np.stack([y, x], axis=1),
+            "lineage": lineage,
+            "weight": np.arange(1, len(ids) + 1, dtype=np.int64),
+            "label": seg_id.astype(np.int32),
+            "y": y,
+            "seg_id": seg_id,
+            "time": t,
+        }
+        edge_props = {"weight": np.linspace(0.5, 1.0, len(LINKS)).astype(np.float32)}
+        extra = {"trackastra_export": {"trench_id": 2, "model_name": "general_2d"}}
+        (group / "_COMPLETE.json").write_text(json.dumps({"trench_id": 2}, indent=2))
+    else:
+        props = {
+            "tracklet": tracklet,
+            "seg_id": seg_id,
+            "coords": np.stack([y, x], axis=1),
+            "x": x,
+            "y": y,
+            "lineage": lineage,
+            "label": seg_id.copy(),
+            "time": t,
+        }
+        edge_props = {}
+        extra = {
+            "selected_cleanliness_export": {"trench_id": 1, "after_continuity_count": 3}
+        }
     _array(geff / "nodes/ids", ids)
     for name, values in props.items():
         _group(geff / "nodes/props" / name)
         _array(geff / "nodes/props" / name / "values", values)
     _array(geff / "edges/ids", np.asarray(LINKS, dtype=np.uint64))
+    for name, values in edge_props.items():
+        _group(geff / "edges/props" / name)
+        _array(geff / "edges/props" / name / "values", values)
     meta = {
         "geff": {
             "geff_version": "1.1",
@@ -185,7 +222,17 @@ def write_trench(group: Path, *, break_tracklet: bool):
                 }
                 for name, values in props.items()
             },
-            "edge_props_metadata": {},
+            "edge_props_metadata": {
+                name: {
+                    "identifier": name,
+                    "dtype": str(values.dtype),
+                    "varlength": False,
+                    "unit": None,
+                    "name": None,
+                    "description": None,
+                }
+                for name, values in edge_props.items()
+            },
             "sphere": None,
             "ellipsoid": None,
             "track_node_props": {"lineage": "lineage", "tracklet": "tracklet"},
@@ -194,12 +241,7 @@ def write_trench(group: Path, *, break_tracklet: bool):
                 {"type": "image", "path": "../images", "label_prop": None},
             ],
             "display_hints": None,
-            "extra": {
-                "selected_cleanliness_export": {
-                    "trench_id": 1,
-                    "after_continuity_count": 3,
-                }
-            },
+            "extra": extra,
         }
     }
     (geff / ".zattrs").write_text(json.dumps(meta, indent=2))
@@ -683,3 +725,177 @@ def test_release_commands_leave_datasets_without_history_alone(archive, tmp_path
     validate(geff)
     assert files(store / "trench_b") == untouched
     assert not has_history(store / "trench_b" / "tracking_graph.geff")
+
+
+# ----------------------------------------------------------------------
+# changing a dataset's format to another's
+# ----------------------------------------------------------------------
+def layout(group: Path) -> dict:
+    """Everything about a trench's files except its data and dataset values."""
+    geff = group / "tracking_graph.geff"
+
+    def is_metadata(p):
+        if not p.is_file() or "edit_history" in p.parts or "c" in p.parts:
+            return False
+        return p.name.startswith(".") or p.suffix == ".json"
+
+    out = {
+        "files": sorted(
+            str(p.relative_to(group)) for p in group.rglob("*") if is_metadata(p)
+        )
+    }
+    for p in sorted(geff.rglob(".zarray")):
+        if "edit_history" in p.parts:
+            continue
+        meta = json.loads(p.read_text())
+        out[str(p.relative_to(group))] = {
+            k: v for k, v in meta.items() if k not in ("shape", "chunks")
+        }
+    root = json.loads((geff / ".zattrs").read_text())
+    for axis in root["geff"]["axes"]:
+        axis.pop("min"), axis.pop("max")
+    out["root"] = json.dumps(root)  # key order matters
+    for name in ("images", "segmentation"):
+        meta = json.loads((group / name / "zarr.json").read_text())
+        out[name] = {k: v for k, v in meta.items() if k != "shape"}
+    return out
+
+
+def values(group: Path) -> dict:
+    root = zarr.open_group(str(group / "tracking_graph.geff"), mode="r")
+    ids = root["nodes/ids"][:].astype(int).tolist()
+    props = {
+        k: root[f"nodes/props/{k}/values"][:].astype(float).tolist()
+        for k in ("time", "y", "x", "coords", "label", "seg_id", "tracklet", "lineage")
+    }
+    return {
+        "ids": ids,
+        "props": props,
+        "edges": root["edges/ids"][:].astype(int).tolist(),
+        "labels": zarr.open_array(str(group / "segmentation"), mode="r")[:].tobytes(),
+        "images": zarr.open_array(str(group / "images"), mode="r")[:].tobytes(),
+    }
+
+
+@pytest.fixture
+def mixed_store(tmp_path):
+    """An archive-layout trench (with a history) and two raw trenches, one with a
+    history and an edit, one never edited; plus an archive-layout template."""
+    store = tmp_path / "mixed.zarr"
+    write_trench(store / "trench_a", break_tracklet=False)
+    write_trench(store / "trench_b", break_tracklet=False, raw=True)
+    write_trench(store / "trench_c", break_tracklet=False, raw=True)
+    template = tmp_path / "template.zarr" / "trench_t"
+    write_trench(template, break_tracklet=False)
+    for trench in ("trench_a", "trench_b"):
+        path = store / trench / "tracking_graph.geff"
+        session, tracks = open_for_editing(path, tmp_path)
+        if trench == "trench_b":
+            UserDeleteNode(tracks, internal(9))
+        else:
+            session.close()
+            session = EditSession.create(tracks, path)
+        session.flush()
+        session.close()
+    return store, template / "tracking_graph.geff"
+
+
+def test_conform_rewrites_raw_trenches_in_the_archive_layout(mixed_store):
+    store, template = mixed_store
+    before = {t: values(store / t) for t in ("trench_a", "trench_b", "trench_c")}
+    assert layout(store / "trench_b") != layout(template.parent)
+
+    assert (
+        release.main(
+            [
+                "conform",
+                str(store),
+                "--like",
+                str(template),
+                "--drop-extra",
+                "--remove",
+                "_COMPLETE.json",
+            ]
+        )
+        == 0
+    )
+
+    expected = layout(template.parent)
+    root = json.loads(expected["root"])
+    root["geff"].pop("extra")
+    expected["root"] = json.dumps(root)
+    for trench in ("trench_a", "trench_b", "trench_c"):
+        group = store / trench
+        assert layout(group) == expected, trench
+        validate(group / "tracking_graph.geff")
+        after = values(group)
+        # the data is unchanged, only its encoding
+        for key in ("ids", "edges", "props", "labels", "images"):
+            assert after[key] == before[trench][key], (trench, key)
+    assert not (store / "trench_b" / "_COMPLETE.json").exists()
+    assert not has_history(store / "trench_c" / "tracking_graph.geff")
+    assert (
+        sf.read_layout(store / "trench_b" / "tracking_graph.geff")["node_props"]
+        == (sf.read_layout(template)["node_props"])
+    )
+
+
+def test_editing_after_conform_keeps_the_new_layout(mixed_store, tmp_path):
+    store, template = mixed_store
+    release.main(
+        [
+            "conform",
+            str(store),
+            "--like",
+            str(template),
+            "--drop-extra",
+            "--remove",
+            "_COMPLETE.json",
+        ]
+    )
+    expected = layout(store / "trench_a")
+
+    for trench in ("trench_b", "trench_c"):  # with and without a history
+        path = store / trench / "tracking_graph.geff"
+        if has_history(path):  # as the app does for a dataset with a history
+            session = EditSession.open(path)
+            tracks = session.tracks
+        else:
+            session, tracks = open_for_editing(path, tmp_path)
+        UserDeleteNode(tracks, internal(6))
+        session.flush()
+        session.close()
+        assert layout(store / trench) == expected
+        validate(path)
+
+
+def test_conform_changes_nothing_unless_every_dataset_passes(mixed_store, monkeypatch):
+    store, template = mixed_store
+    before = files(store)
+    real_check = sf.check
+    calls = []
+
+    def fail_on_third(*args, **kwargs):
+        calls.append(1)
+        return ["boom"] if len(calls) == 3 else real_check(*args, **kwargs)
+
+    monkeypatch.setattr(sf, "check", fail_on_third)
+    with pytest.raises(sf.PublicationRejected, match="boom"):
+        release.main(["conform", str(store), "--like", str(template), "--drop-extra"])
+    assert files(store) == before
+
+
+def test_conform_refuses_a_template_with_properties_the_dataset_lacks(mixed_store):
+    store, _ = mixed_store
+    raw_template = store / "trench_c" / "tracking_graph.geff"
+    with pytest.raises(sf.UnsupportedFormat, match="weight"):
+        release.conform_store(store, raw_template)
+
+
+def test_export_includes_datasets_without_history(mixed_store, tmp_path):
+    store, template = mixed_store
+    release.main(["conform", str(store), "--like", str(template), "--drop-extra"])
+    rows = release.export(store, tmp_path / "out.zarr", drop_extra=True)
+    assert {row["dataset"] for row in rows} == {"trench_a", "trench_b", "trench_c"}
+    for trench in ("trench_a", "trench_b", "trench_c"):
+        validate(tmp_path / "out.zarr" / trench / "tracking_graph.geff")

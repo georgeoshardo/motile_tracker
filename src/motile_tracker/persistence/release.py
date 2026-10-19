@@ -11,6 +11,16 @@ Commands (``python -m motile_tracker.persistence.release <command> ...``):
     Rebuild each dataset's published files from its history, in its recorded
     format (graph and label array), through the publication gate.
 
+``conform STORE --like TEMPLATE [--drop-extra] [--remove NAME ...]``
+    Rewrite every dataset in the format of TEMPLATE (a GEFF group): properties
+    the template lacks are dropped with their values, data types, encodings,
+    metadata layout and the label and image arrays' metadata become the
+    template's. Datasets with a history get the new format recorded, so further
+    editing keeps it. ``--drop-extra`` also drops the ``extra`` metadata, and
+    ``--remove`` deletes the named files from each dataset's group (e.g. export
+    markers). Every dataset is first rewritten in a scratch directory and must
+    pass the publication gate before any is changed.
+
 ``export STORE OUT [--drop-extra] [--report CSV]``
     Write a release copy: every dataset in its recorded format, without edit
     histories or lock files, every one checked by the publication gate. Groups
@@ -24,8 +34,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import os
 import shutil
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -46,6 +59,122 @@ def find_geffs(store):
 
 def _initial_tracks(store):
     return restore(store.state_at(0), store.get_blob)
+
+
+def load_dataset(geff):
+    """A dataset's current tracks, format and revision.
+
+    With an edit history: the latest committed revision and the recorded format.
+    Without one (never edited): the files as they are, and their format.
+    """
+    geff = Path(geff)
+    if history_path(geff).is_file():
+        with Store(geff, readonly=True) as source:
+            revision, state, _ = source.read(include_history=False)
+            fmt = source.metadata("source_format")
+            if fmt is None:
+                raise ValueError(
+                    f"{geff}: no recorded format (run attach-format first)"
+                )
+            return restore(state, source.get_blob), fmt, revision
+    from motile_tracker.import_export.geff_collection import load_geff_group
+
+    tracks = load_geff_group(geff).tracks
+    return tracks, sf.capture(geff, tracks), None
+
+
+def _trial(tracks, fmt):
+    """Gate problems of writing the tracks in a format, in a scratch directory."""
+    with tempfile.TemporaryDirectory(prefix="motile-conform-") as scratch:
+        geff, labels = Path(scratch) / "tracks.geff", Path(scratch) / "labels"
+        content = sf.write(tracks, fmt, geff, labels if fmt.get("labels") else None)
+        return sf.check(geff, labels if fmt.get("labels") else None, fmt, content)
+
+
+def _rewrite_without_history(geff, tracks, fmt):
+    """Rewrite a never-edited dataset in a format: staged, gated, then swapped in."""
+    geff = Path(geff)
+    labels = sf.labels_path(geff, fmt)
+    with tempfile.TemporaryDirectory(
+        prefix=".motile-conform-", dir=geff.parent
+    ) as scratch:
+        staged = Path(scratch) / geff.name
+        staged_labels = Path(scratch) / "labels" if labels is not None else None
+        content = sf.write(tracks, fmt, staged, staged_labels)
+        problems = sf.check(staged, staged_labels, fmt, content)
+        if problems:
+            raise sf.PublicationRejected(problems)
+        for member in staged.iterdir():
+            target = geff / member.name
+            if member.is_dir() and target.exists():
+                shutil.rmtree(target)
+            os.replace(member, target)
+        if labels is not None:
+            os.replace(labels, Path(scratch) / "previous_labels")
+            os.replace(staged_labels, labels)
+
+
+def conform_store(store, template_geff, *, drop_extra=False, remove=()):
+    """Rewrite every dataset in `store` in the format of `template_geff`.
+
+    All datasets are planned and trial-written first; nothing changes unless
+    every one passes the gate. Returns one row per dataset.
+    """
+    store = Path(store).resolve()
+    template = sf.read_layout(template_geff)
+    image_template = template["related"].get("image", {}).get("zarr.json")
+    plans = []
+    for geff in find_geffs(store):
+        tracks, fmt, revision = load_dataset(geff)
+        new = sf.conform(fmt, template, drop_extra=drop_extra)
+        problems = _trial(tracks, new)
+        if problems:
+            raise sf.PublicationRejected([f"{geff.parent.name}: {p}" for p in problems])
+        image_json = None
+        attrs = json.loads(new["root_text"])["geff"]
+        for obj in attrs.get("related_objects") or []:
+            target = (geff / obj.get("path", "")).resolve()
+            if (
+                obj.get("type") == "image"
+                and image_template
+                and (target / "zarr.json").is_file()
+            ):
+                text = (target / "zarr.json").read_text()
+                image_json = (
+                    target / "zarr.json",
+                    sf.conform_array_json(text, image_template),
+                )
+        dropped = sorted(set(fmt["node_props"]) - set(new["node_props"]))
+        dropped += [
+            f"edges/{p}"
+            for p in sorted(set(fmt["edge_props"]) - set(new["edge_props"]))
+        ]
+        plans.append((geff, tracks, new, revision, image_json, dropped))
+
+    rows = []
+    for geff, tracks, new, revision, image_json, dropped in plans:
+        if revision is not None:
+            record_format(geff, new)
+            republish(geff)
+        else:
+            _rewrite_without_history(geff, tracks, new)
+        if image_json is not None and image_json[0].read_text() != image_json[1]:
+            image_json[0].write_text(image_json[1])
+        removed = []
+        for name in remove:
+            target = geff.parent / name
+            if target.is_file():
+                target.unlink()
+                removed.append(name)
+        rows.append(
+            {
+                "dataset": geff.parent.name,
+                "history": revision is not None,
+                "dropped": dropped,
+                "removed": removed,
+            }
+        )
+    return rows
 
 
 def verify_format(geff, reference):
@@ -151,16 +280,7 @@ def export(store, out, *, drop_extra=False, report=None):
     for geff in geffs:
         group = geff.parent
         target_group = out if single else out / group.relative_to(store)
-        if not history_path(geff).is_file():
-            raise FileNotFoundError(f"{geff} has no edit history")
-        with Store(geff, readonly=True) as source:
-            revision, state, _ = source.read(include_history=False)
-            fmt = source.metadata("source_format")
-            if fmt is None:
-                raise ValueError(
-                    f"{geff}: no recorded format (run attach-format first)"
-                )
-            tracks = restore(state, source.get_blob)
+        tracks, fmt, revision = load_dataset(geff)
         labels = sf.labels_path(geff, fmt)
         target_geff = (out / geff.name) if single else target_group / geff.name
         target_labels = (
@@ -216,6 +336,11 @@ def main(argv=None):
     attach.add_argument("--reference", type=Path, required=True)
     again = commands.add_parser("republish")
     again.add_argument("store", type=Path)
+    like = commands.add_parser("conform")
+    like.add_argument("store", type=Path)
+    like.add_argument("--like", type=Path, required=True)
+    like.add_argument("--drop-extra", action="store_true")
+    like.add_argument("--remove", action="append", default=[])
     out = commands.add_parser("export")
     out.add_argument("store", type=Path)
     out.add_argument("out", type=Path)
@@ -252,6 +377,17 @@ def main(argv=None):
         for geff in geffs:
             revision = republish(geff)
             print(f"{geff.parent.name}: republished revision {revision}")
+    elif args.command == "conform":
+        rows = conform_store(
+            store, args.like.resolve(), drop_extra=args.drop_extra, remove=args.remove
+        )
+        dropped = Counter(p for row in rows for p in row["dropped"])
+        removed = Counter(n for row in rows for n in row["removed"])
+        print(
+            f"conformed {len(rows)} datasets "
+            f"({sum(r['history'] for r in rows)} with history); "
+            f"dropped properties {dict(dropped)}; removed files {dict(removed)}"
+        )
     else:
         rows = export(
             args.store, args.out, drop_extra=args.drop_extra, report=args.report
