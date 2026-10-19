@@ -134,28 +134,22 @@ def _read(array_dir: Path) -> np.ndarray:
 # ----------------------------------------------------------------------
 # capture
 # ----------------------------------------------------------------------
-def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
-    """Record a GEFF dataset's format and its cells as they are now.
+def read_layout(geff_path) -> dict:
+    """The parts of a GEFF's format that do not depend on its cells.
 
-    Args:
-        geff_path: The GEFF group (zarr v2) on disk, in its original format.
-        tracks: The tracks loaded from it, before any edit. Used to verify that
-            ids, times and masks line up with the files, and to learn the id
-            offset funtracks applied on import.
-        check_masks: Verify every cell's mask against the label array.
+    That is the root metadata text and its JSON style, the group metadata files,
+    every array's encoding, the node and edge property names, and the metadata
+    files of the arrays it refers to (``related_objects``), keyed by object type.
 
     Raises:
-        UnsupportedFormat: if the format cannot be reproduced.
+        UnsupportedFormat: if the GEFF is not a zarr v2 group with fixed-length
+            properties.
     """
     geff_path = Path(geff_path).resolve()
     root_file = geff_path / ".zattrs"
     if not root_file.is_file() or not (geff_path / ".zgroup").is_file():
         raise UnsupportedFormat("only zarr v2 GEFF groups keep their format")
     root_text = root_file.read_text()
-    attrs = json.loads(root_text)
-    geff = attrs.get("geff") or {}
-    if is_native(attrs):
-        raise UnsupportedFormat("written by funtracks; uses the native format")
 
     files, arrays = {}, {}
     for file in sorted(geff_path.rglob("*")):
@@ -187,7 +181,49 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
                     names.append(parts[2])
         return names
 
-    node_props, edge_props = props_of("nodes"), props_of("edges")
+    related = {}
+    geff = (json.loads(root_text).get("geff")) or {}
+    for obj in geff.get("related_objects") or []:
+        target = (geff_path / obj.get("path", "")).resolve()
+        if obj.get("path") and target.is_dir() and obj.get("type") not in related:
+            related[obj["type"]] = {
+                name: (target / name).read_text()
+                for name in ("zarr.json", ".zarray", ".zattrs")
+                if (target / name).is_file()
+            }
+    return {
+        "root_text": root_text,
+        "root_style": _json_style(root_text),
+        "files": files,
+        "arrays": arrays,
+        "node_props": props_of("nodes"),
+        "edge_props": props_of("edges"),
+        "related": related,
+    }
+
+
+def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
+    """Record a GEFF dataset's format and its cells as they are now.
+
+    Args:
+        geff_path: The GEFF group (zarr v2) on disk, in its original format.
+        tracks: The tracks loaded from it, before any edit. Used to verify that
+            ids, times and masks line up with the files, and to learn the id
+            offset funtracks applied on import.
+        check_masks: Verify every cell's mask against the label array.
+
+    Raises:
+        UnsupportedFormat: if the format cannot be reproduced.
+    """
+    geff_path = Path(geff_path).resolve()
+    if (geff_path / ".zattrs").is_file() and is_native(
+        json.loads((geff_path / ".zattrs").read_text())
+    ):
+        raise UnsupportedFormat("written by funtracks; uses the native format")
+    layout = read_layout(geff_path)
+    root_text, files, arrays = layout["root_text"], layout["files"], layout["arrays"]
+    node_props, edge_props = layout["node_props"], layout["edge_props"]
+    geff = json.loads(root_text).get("geff") or {}
     node_ids = _read(geff_path / "nodes/ids").astype(np.int64)
     edge_ids = _read(geff_path / "edges/ids").astype(np.int64).reshape(-1, 2)
     values = {p: _read(geff_path / f"nodes/props/{p}/values") for p in node_props}
@@ -340,7 +376,7 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
     return {
         "version": FORMAT_VERSION,
         "root_text": root_text,
-        "root_style": _json_style(root_text),
+        "root_style": layout["root_style"],
         "files": files,
         "arrays": arrays,
         "node_props": node_props,
@@ -821,6 +857,126 @@ def check(geff_dir, labels_dir, fmt, content, *, drop_extra=False) -> list[str]:
                 )
                 break
     return problems
+
+
+# ----------------------------------------------------------------------
+# changing a dataset's format to another dataset's
+# ----------------------------------------------------------------------
+_ROOT_VALUES = ("extra",)  # metadata that describes the dataset, not its format
+
+
+def conform_array_json(own_text: str, template_text: str) -> str:
+    """An array's ``zarr.json`` with the template's attributes and layout.
+
+    The array itself (shape, data type, chunks, codecs) must be the same; only
+    its attributes (e.g. ``axis_types``) and JSON layout follow the template.
+    """
+    own, template = json.loads(own_text), json.loads(template_text)
+    if {**own, "attributes": None} == {**template, "attributes": None}:
+        return template_text
+    same_kind = {k: v for k, v in own.items() if k not in ("attributes", "shape")} == {
+        k: v for k, v in template.items() if k not in ("attributes", "shape")
+    }
+    if not same_kind:
+        raise UnsupportedFormat("arrays are encoded differently; cannot conform")
+    return _dumps(
+        {**own, "attributes": template.get("attributes", {})},
+        _json_style(template_text),
+    )
+
+
+def conform(fmt: dict, template: dict, *, drop_extra: bool = False) -> dict:
+    """The dataset format `fmt` changed to follow `template` (see :func:`read_layout`).
+
+    Afterwards the dataset is written exactly like the template's dataset:
+    properties the template lacks are dropped together with their values,
+    property and id data types, array encodings, group files, metadata layout
+    and property order are the template's, and the label array's metadata is the
+    template's. What describes this dataset rather than the format is kept: its
+    cells, axis ranges, and its ``extra`` metadata unless `drop_extra`.
+
+    Raises:
+        UnsupportedFormat: if the template needs a property the dataset does not
+            have, or the two describe their axes, tracks or related arrays
+            differently.
+    """
+    import copy
+
+    own_root = json.loads(fmt["root_text"])
+    new_root = json.loads(template["root_text"])
+    own, new = own_root["geff"], new_root["geff"]
+
+    def axes_kind(geff):
+        return [
+            {k: v for k, v in axis.items() if k not in ("min", "max")}
+            for axis in geff.get("axes") or []
+        ]
+
+    for key, describe in (
+        ("axes", axes_kind),
+        ("track_node_props", lambda g: g.get("track_node_props")),
+        ("related_objects", lambda g: g.get("related_objects")),
+    ):
+        if describe(own) != describe(new):
+            raise UnsupportedFormat(f"{key} differ from the template's")
+    missing = [p for p in template["node_props"] if p not in fmt["node_props"]]
+    missing += [p for p in template["edge_props"] if p not in fmt["edge_props"]]
+    if missing:
+        raise UnsupportedFormat(
+            f"the template has properties this dataset lacks: {missing}"
+        )
+
+    # the template's metadata with this dataset's own values
+    for axis, own_axis in zip(
+        new.get("axes") or [], own.get("axes") or [], strict=True
+    ):
+        for bound in ("min", "max"):
+            if bound in axis:
+                axis[bound] = own_axis.get(bound)
+    for key in _ROOT_VALUES:
+        if key in own and not drop_extra:
+            new[key] = own[key]
+        else:
+            new.pop(key, None)
+
+    out = copy.deepcopy(fmt)
+    out["root_text"] = _dumps(new_root, template["root_style"])
+    out["root_style"] = template["root_style"]
+    out["files"] = dict(template["files"])
+    out["arrays"] = copy.deepcopy(template["arrays"])
+    out["node_props"] = list(template["node_props"])
+    out["edge_props"] = list(template["edge_props"])
+    kept = set(template["node_props"])
+    out["roles"]["other"] = {
+        name: role for name, role in fmt["roles"]["other"].items() if name in kept
+    }
+    for entry in out["archived"].values():
+        props = {k: v for k, v in (entry.get("props") or {}).items() if k in kept}
+        if props:
+            entry["props"] = props
+        else:
+            entry.pop("props", None)
+    edge_kept = set(template["edge_props"])
+    out["edge_archived"] = (
+        {
+            key: {k: v for k, v in values.items() if k in edge_kept}
+            for key, values in fmt["edge_archived"].items()
+        }
+        if edge_kept
+        else {}
+    )
+    labels_template = template["related"].get("labels")
+    if out.get("labels") and labels_template:
+        out["labels"]["files"] = {
+            name: conform_array_json(text, labels_template[name])
+            if name in labels_template
+            else text
+            for name, text in out["labels"]["files"].items()
+        }
+        dtype = json.loads(labels_template.get("zarr.json", "{}")).get("data_type")
+        if dtype is not None and np.dtype(dtype) != np.dtype(out["labels"]["dtype"]):
+            raise UnsupportedFormat("label arrays have different data types")
+    return out
 
 
 def rebase(fmt, source, destination, labels_target=None):
