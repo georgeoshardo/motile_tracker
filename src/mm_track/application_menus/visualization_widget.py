@@ -1,7 +1,6 @@
 import contextlib
 
 import napari
-from napari_orthogonal_views.ortho_view_manager import _VIEWER_MANAGERS
 from psygnal import Signal
 from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import (
@@ -20,8 +19,24 @@ from qtpy.QtWidgets import (
 )
 from superqt import QLabeledDoubleSlider
 
-from mm_track.data_views.views.ortho_views import initialize_ortho_views
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+
+# napari-orthogonal-views needs OpenCV, so it is only imported once the views
+# are opened
+
+
+def initialize_ortho_views(viewer):
+    from mm_track.data_views.views.ortho_views import (
+        initialize_ortho_views as initialize,
+    )
+
+    return initialize(viewer)
+
+
+def _viewer_managers():
+    from napari_orthogonal_views.ortho_view_manager import _VIEWER_MANAGERS
+
+    return _VIEWER_MANAGERS
 
 
 class VisualizationConfigWidget(QWidget):
@@ -284,8 +299,9 @@ class VisualizationWidget(QWidget):
         if self.show_ortho_views.isChecked() != checked:
             # sync checkbox state, since there are two ways to trigger this function (checkbox or menu action in ortho view widget)
             self.show_ortho_views.setChecked(checked)
-        if self.viewer in _VIEWER_MANAGERS:
-            self.orth_view_manager = _VIEWER_MANAGERS[self.viewer]
+        managers = _viewer_managers()
+        if self.viewer in managers:
+            self.orth_view_manager = managers[self.viewer]
             if not checked:
                 self.orth_view_manager.hide()
                 self.orth_view_manager.set_splitter_sizes(
