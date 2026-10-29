@@ -3,10 +3,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from motile_tracker.application_menus.visualization_widget import (
+from mm_track.application_menus.visualization_widget import (
     VisualizationWidget,
 )
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
@@ -227,9 +227,9 @@ class TestOrthoViewsIntegration:
         widget, _ = visualization_widget
         assert not widget.show_ortho_views.isChecked()
 
-    @patch("motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS", {})
+    @patch("mm_track.application_menus.visualization_widget._VIEWER_MANAGERS", {})
     @patch(
-        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+        "mm_track.application_menus.visualization_widget.initialize_ortho_views"
     )
     def test_initialize_ortho_views_viewer_not_in_managers(
         self, mock_init, visualization_widget
@@ -263,7 +263,7 @@ class TestOrthoViewsIntegration:
 
         # Mock the _VIEWER_MANAGERS to already contain this viewer
         with patch(
-            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            "mm_track.application_menus.visualization_widget._VIEWER_MANAGERS",
             {widget.viewer: mock_manager},
         ):
             widget.show_ortho_views.setChecked(True)
@@ -281,7 +281,7 @@ class TestOrthoViewsIntegration:
         mock_manager.set_splitter_sizes = MagicMock()
 
         with patch(
-            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            "mm_track.application_menus.visualization_widget._VIEWER_MANAGERS",
             {widget.viewer: mock_manager},
         ):
             # Check the box first
@@ -296,7 +296,7 @@ class TestOrthoViewsIntegration:
             mock_manager.set_splitter_sizes.assert_called_once_with(0.0, 0.0)
 
     @patch(
-        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+        "mm_track.application_menus.visualization_widget.initialize_ortho_views"
     )
     def test_ortho_views_signal_connection(self, mock_init, visualization_widget):
         """Test that the ortho view manager's signal is connected to the widget."""
@@ -318,7 +318,7 @@ class TestOrthoViewsIntegration:
         assert call_args[0] == widget.initialize_ortho_views
 
     @patch(
-        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+        "mm_track.application_menus.visualization_widget.initialize_ortho_views"
     )
     def test_on_ortho_cleanup(self, mock_init, visualization_widget):
         """Test cleanup when ortho view manager is destroyed."""
@@ -344,7 +344,7 @@ class TestOrthoViewsIntegration:
         assert widget.orth_views_connection is None
 
     @patch(
-        "motile_tracker.application_menus.visualization_widget.initialize_ortho_views"
+        "mm_track.application_menus.visualization_widget.initialize_ortho_views"
     )
     def test_disconnect_ortho_views_with_valid_connection(
         self, mock_init, visualization_widget
@@ -389,7 +389,7 @@ class TestOrthoViewsIntegration:
         )
 
         with patch(
-            "motile_tracker.application_menus.visualization_widget._VIEWER_MANAGERS",
+            "mm_track.application_menus.visualization_widget._VIEWER_MANAGERS",
             {widget.viewer: mock_manager},
         ):
             # Manually call with checked=False (simulating external unchecking)

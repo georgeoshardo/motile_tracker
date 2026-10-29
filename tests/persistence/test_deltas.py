@@ -8,9 +8,9 @@ import zlib
 
 import pytest
 
-from motile_tracker.persistence.codec import Encoder, dumps
-from motile_tracker.persistence.deltas import apply_changes, encode_changes
-from motile_tracker.persistence.store import Store, history_path
+from mm_track.persistence.codec import Encoder, dumps
+from mm_track.persistence.deltas import apply_changes, encode_changes
+from mm_track.persistence.store import Store, history_path
 
 EMPTY_HISTORY = {"undo_stack": [], "redo_stack": []}
 

@@ -1,8 +1,8 @@
 from funtracks.import_export import write_to_geff
 from funtracks.user_actions import UserDeleteNode
 
-from motile_tracker.data_views.views_coordinator.tracks_list import TracksList
-from motile_tracker.persistence.session import EditSession
+from mm_track.data_views.views_coordinator.tracks_list import TracksList
+from mm_track.persistence.session import EditSession
 
 
 def test_loaded_dataset_autosaves_to_its_source(solution_tracks_2d, tmp_path, qtbot):
@@ -27,7 +27,7 @@ def test_new_results_get_unique_destinations(
 ):
     from funtracks.data_model import SolutionTracks
 
-    from motile_tracker.data_views.views_coordinator import tracks_list
+    from mm_track.data_views.views_coordinator import tracks_list
 
     monkeypatch.setattr(tracks_list, "default_save_dir", lambda: tmp_path)
     widget = TracksList()
@@ -67,8 +67,8 @@ def test_load_recovers_history_before_reading_geff(solution_tracks_2d, tmp_path,
 def test_motile_loader_recovers_missing_graph(graph_2d, tmp_path, qtbot):
     import shutil
 
-    from motile_tracker.motile.backend.motile_run import MotileRun
-    from motile_tracker.motile.backend.solver_params import SolverParams
+    from mm_track.motile.backend.motile_run import MotileRun
+    from mm_track.motile.backend.solver_params import SolverParams
 
     tracks = MotileRun(graph_2d, "run", solver_params=SolverParams())
     path = tmp_path / "run.geff"

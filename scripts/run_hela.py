@@ -6,13 +6,13 @@ import zarr
 from appdirs import AppDirs
 from napari.utils.theme import _themes
 
-from motile_tracker.application_menus import StartupWidget
+from mm_track.application_menus import StartupWidget
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(filename)s:%(lineno)d] %(levelname)-8s %(message)s",
 )
-logging.getLogger("motile_tracker").setLevel(logging.DEBUG)
+logging.getLogger("mm_track").setLevel(logging.DEBUG)
 
 _themes["dark"].font_size = "18pt"
 
@@ -20,7 +20,7 @@ _themes["dark"].font_size = "18pt"
 # Load Zarr datasets
 
 ds_name = "Fluo-N2DL-HeLa"
-appdir = AppDirs("motile-tracker")
+appdir = AppDirs("mm-track")
 data_dir = Path(appdir.user_data_dir)
 zarr_directory = data_dir / f"{ds_name}.zarr"
 zarr_group = zarr.open_group(zarr_directory, mode="r")

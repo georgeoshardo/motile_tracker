@@ -8,7 +8,7 @@ Tests cover:
 - Previous selection restoration
 """
 
-from motile_tracker.data_views.views_coordinator.node_selection_history import (
+from mm_track.data_views.views_coordinator.node_selection_history import (
     NodeSelectionHistory,
 )
 

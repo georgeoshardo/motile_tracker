@@ -1,4 +1,4 @@
-from motile_tracker.import_export.menus.scale_widget import (
+from mm_track.import_export.menus.scale_widget import (
     ScaleWidget,
 )
 

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.lazy_array_wrapper import (
+from mm_track.data_views.lazy_array_wrapper import (
     LazyArrayWrapper,
     _is_fancy_index,
 )

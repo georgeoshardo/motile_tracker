@@ -8,8 +8,8 @@ from funtracks.import_export import import_from_geff
 from geff import GeffMetadata
 from geff import write as write_geff
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-from motile_tracker.import_export.geff_collection import (
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.import_export.geff_collection import (
     GeffGroup,
     add_geff_group_to_viewer,
     find_geff_groups,
@@ -18,7 +18,7 @@ from motile_tracker.import_export.geff_collection import (
     node_name_map_from_metadata,
     read_related_arrays,
 )
-from motile_tracker.import_export.geff_io import write_geff_over
+from mm_track.import_export.geff_io import write_geff_over
 
 
 def test_find_geff_groups_names_groups_after_their_parent(geff_collection_store):

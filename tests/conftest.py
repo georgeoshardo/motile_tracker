@@ -5,13 +5,13 @@ from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 from tracksdata.nodes._mask import Mask
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
 def isolated_autosave_storage(tmp_path, monkeypatch):
     """GUI tests must never write automatic results into the user's data folder."""
-    from motile_tracker.data_views.views_coordinator import tracks_list
+    from mm_track.data_views.views_coordinator import tracks_list
 
     monkeypatch.setattr(tracks_list, "default_save_dir", lambda: tmp_path / "autosaved")
     widgets = []

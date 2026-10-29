@@ -5,8 +5,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.keybindings_config import KEYMAP
-from motile_tracker.data_views.views_coordinator.node_edits import (
+from mm_track.data_views.keybindings_config import KEYMAP
+from mm_track.data_views.views_coordinator.node_edits import (
     MergeNodes,
     SplitNode,
     choose_kept_node,
@@ -16,7 +16,7 @@ from motile_tracker.data_views.views_coordinator.node_edits import (
     plan_split,
     propose_split,
 )
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
@@ -187,7 +187,7 @@ class TestSplit:
         click_node(tracks_viewer, 3, append=True)
 
         with patch(
-            "motile_tracker.data_views.views_coordinator.tracks_viewer.show_warning"
+            "mm_track.data_views.views_coordinator.tracks_viewer.show_warning"
         ) as warning:
             tracks_viewer.split_node()
 
@@ -206,7 +206,7 @@ class TestSplit:
         _, _, tracks = tracks_viewer_setup
         from funtracks.exceptions import InvalidActionError
 
-        from motile_tracker.data_views.views_coordinator.node_edits import SplitPlan
+        from mm_track.data_views.views_coordinator.node_edits import SplitPlan
 
         mask = node_mask(tracks, 4)
         plan = SplitPlan(node=4, keep_mask=mask, new_mask=np.zeros_like(mask))
@@ -292,7 +292,7 @@ class TestMerge:
         click_node(tracks_viewer, 2, append=True)
 
         with patch(
-            "motile_tracker.data_views.views_coordinator.tracks_viewer.show_warning"
+            "mm_track.data_views.views_coordinator.tracks_viewer.show_warning"
         ) as warning:
             tracks_viewer.merge_nodes()
 
@@ -362,7 +362,7 @@ class TestNewLabelAfterDeletion:
     painting with a deleted node's id is refused (napari-track-edit #478)."""
 
     def test_spatial_new_label_skips_an_undone_split(self, tracks_viewer_setup):
-        from motile_tracker.data_views.views.layers.track_labels import new_label
+        from mm_track.data_views.views.layers.track_labels import new_label
 
         _, tracks_viewer, tracks = tracks_viewer_setup
         action = SplitNode(tracks, propose_split(tracks, 4))
@@ -415,7 +415,7 @@ class TestMergeOverTime:
         return masks, pairs
 
     def test_can_merge_needs_two_nodes_in_some_frame(self, tracks_viewer_setup):
-        from motile_tracker.data_views.views_coordinator.node_edits import can_merge
+        from mm_track.data_views.views_coordinator.node_edits import can_merge
 
         _, _, tracks = tracks_viewer_setup
         assert can_merge(tracks, [2, 3])  # both t1
@@ -453,7 +453,7 @@ class TestMergeOverTime:
         assert _snapshot(tracks) == split_state
 
     def test_lone_nodes_are_left_alone_and_reported(self, tracks_viewer_setup):
-        from motile_tracker.data_views.views_coordinator.node_edits import (
+        from mm_track.data_views.views_coordinator.node_edits import (
             MergeNodesOverTime,
         )
 
@@ -466,7 +466,7 @@ class TestMergeOverTime:
     def test_nothing_to_merge_is_refused(self, tracks_viewer_setup):
         from funtracks.exceptions import InvalidActionError
 
-        from motile_tracker.data_views.views_coordinator.node_edits import (
+        from mm_track.data_views.views_coordinator.node_edits import (
             MergeNodesOverTime,
         )
 
@@ -476,7 +476,7 @@ class TestMergeOverTime:
         before = _snapshot(tracks)
         tracks_viewer.selected_nodes.add_list([1, 2, 4])
         with patch(
-            "motile_tracker.data_views.views_coordinator.tracks_viewer.show_warning"
+            "mm_track.data_views.views_coordinator.tracks_viewer.show_warning"
         ) as warning:
             tracks_viewer.merge_nodes()
         warning.assert_called_once()

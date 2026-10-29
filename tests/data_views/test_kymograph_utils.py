@@ -1,6 +1,6 @@
 import numpy as np
 
-from motile_tracker.data_views.views.kymograph_utils import (
+from mm_track.data_views.views.kymograph_utils import (
     KymographGeometry,
     KymographLinkRenderData,
     build_kymograph_link_data,

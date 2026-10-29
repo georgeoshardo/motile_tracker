@@ -49,8 +49,8 @@ if platform.system() == "Darwin":
 
 def test_add_tracks(benchmark, make_napari_viewer, shared_tracks):
     """Open viewer + add tracks (creates points/graph/labels layers + tree data)."""
-    from motile_tracker.application_menus import StartupWidget
-    from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+    from mm_track.application_menus import StartupWidget
+    from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
     def setup():
         viewer = make_napari_viewer()

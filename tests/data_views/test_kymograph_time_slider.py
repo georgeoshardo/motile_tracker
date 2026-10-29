@@ -4,8 +4,8 @@ kymograph one frame per step and follows the view."""
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.views.kymograph_time_slider import KymographTimeSlider
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views.kymograph_time_slider import KymographTimeSlider
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)

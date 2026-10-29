@@ -2,7 +2,7 @@
 
 from qtpy.QtWidgets import QWidget
 
-from motile_tracker.application_menus.main_app import (
+from mm_track.application_menus.main_app import (
     MENU_WIDGETS,
     EditingGroupWidget,
     EditingSelection_LauncherWidget,

@@ -7,9 +7,9 @@ import tracksdata as td
 from funtracks.data_model import SolutionTracks
 from funtracks.utils.tracksdata_utils import create_empty_graphview_graph
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-from motile_tracker.motile.backend import MotileRun, SolverParams
-from motile_tracker.motile.menus.run_editor import RunEditor
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.motile.backend import MotileRun, SolverParams
+from mm_track.motile.menus.run_editor import RunEditor
 
 
 def test_run_editor_initialization(make_napari_viewer, segmentation_2d):

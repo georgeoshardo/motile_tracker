@@ -30,11 +30,11 @@ import pytest
 import zarr
 from funtracks.user_actions import UserAddEdge, UserDeleteEdge, UserDeleteNode
 
-from motile_tracker.import_export.geff_collection import load_geff_group
-from motile_tracker.persistence import release
-from motile_tracker.persistence import source_format as sf
-from motile_tracker.persistence.paths import create_session
-from motile_tracker.persistence.session import EditSession, PendingSession, has_history
+from mm_track.import_export.geff_collection import load_geff_group
+from mm_track.persistence import release
+from mm_track.persistence import source_format as sf
+from mm_track.persistence.paths import create_session
+from mm_track.persistence.session import EditSession, PendingSession, has_history
 
 FRAMES, HEIGHT, WIDTH = 5, 30, 12
 # external id: (t, first row, last row, label, tracklet, lineage)
@@ -419,7 +419,7 @@ def test_first_edit_publishes_in_the_dataset_format(archive, tmp_path):
 
 
 def test_split_gives_a_new_id_and_the_lowest_free_label(archive, tmp_path):
-    from motile_tracker.data_views.views_coordinator.node_edits import (
+    from mm_track.data_views.views_coordinator.node_edits import (
         SplitNode,
         propose_split,
     )
@@ -684,7 +684,7 @@ def test_release_commands_with_relative_paths(archive, tmp_path, monkeypatch):
 
 
 def test_attach_format_records_nothing_unless_every_dataset_matches(archive, tmp_path):
-    from motile_tracker.persistence.store import Store
+    from mm_track.persistence.store import Store
 
     geff, pristine = archive
     store = geff.parent.parent

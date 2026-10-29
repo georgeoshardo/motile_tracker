@@ -7,14 +7,14 @@ import zarr
 from appdirs import AppDirs
 from napari.utils.theme import _themes
 
-from motile_tracker.application_menus import StartupWidget
-from motile_tracker.data_views import TreeWidget
+from mm_track.application_menus import StartupWidget
+from mm_track.data_views import TreeWidget
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(filename)s:%(lineno)d] %(levelname)-8s %(message)s",
 )
-logging.getLogger("motile_tracker").setLevel(logging.DEBUG)
+logging.getLogger("mm_track").setLevel(logging.DEBUG)
 
 _themes["dark"].font_size = "18pt"
 

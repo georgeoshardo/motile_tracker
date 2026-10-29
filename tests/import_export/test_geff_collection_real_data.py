@@ -1,7 +1,7 @@
 """Smoke test on the real mother machine dataset, if it is available locally.
 
 The dataset (``trackastra_selected_graph_trenches.zarr``, 44 trenches of 721
-frames each) is not part of the repository; point MOTILE_TRACKER_TRENCH_ZARR at
+frames each) is not part of the repository; point MM_TRACK_TRENCH_ZARR at
 it or keep it in the repository root to run these tests.
 """
 
@@ -12,15 +12,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
-from motile_tracker.import_export.geff_collection import (
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.import_export.geff_collection import (
     add_geff_group_to_viewer,
     find_geff_groups,
 )
 
 STORE = Path(
     os.environ.get(
-        "MOTILE_TRACKER_TRENCH_ZARR",
+        "MM_TRACK_TRENCH_ZARR",
         Path(__file__).resolve().parents[2] / "trackastra_selected_graph_trenches.zarr",
     )
 )
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def editable_trench_store(tmp_path, monkeypatch):
     """Autosave must never turn a real-data smoke test into a source-data edit."""
-    from motile_tracker.import_export import geff_collection
+    from mm_track.import_export import geff_collection
 
     destination = tmp_path / "trenches.zarr"
     for trench in ("trench_0165", "trench_0279"):
@@ -146,13 +146,13 @@ def test_trench_loads_into_kymograph_and_is_editable(
 def test_merge_then_split_two_real_cells(editable_trench_store):
     """Merging two neighbouring cells of a trench and splitting the merged mask
     again recovers both cells and their links, using the previous frame as guide."""
-    from motile_tracker.data_views.views_coordinator.node_edits import (
+    from mm_track.data_views.views_coordinator.node_edits import (
         MergeNodes,
         SplitNode,
         node_mask,
         propose_split,
     )
-    from motile_tracker.import_export.geff_collection import load_geff_group
+    from mm_track.import_export.geff_collection import load_geff_group
 
     loaded = load_geff_group(
         editable_trench_store / "trench_0165" / "tracking_graph.geff"
@@ -221,11 +221,11 @@ def test_split_quality_on_merged_neighbours(editable_trench_store):
     """The split cascade recovers artificially merged neighbouring cells: over a
     sample of touching pairs from two trenches, the mean IoU with the true cells
     stays high, with the previous frame as guide and the raw image as evidence."""
-    from motile_tracker.data_views.views_coordinator.mask_split import (
+    from mm_track.data_views.views_coordinator.mask_split import (
         bright_cells_in_frame,
         split_mask,
     )
-    from motile_tracker.import_export.geff_collection import load_geff_group
+    from mm_track.import_export.geff_collection import load_geff_group
 
     def iou(x, y):
         return np.count_nonzero(x & y) / np.count_nonzero(x | y)

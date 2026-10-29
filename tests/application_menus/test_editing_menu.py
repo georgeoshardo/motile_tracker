@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 from qtpy.QtCore import Qt
 
-from motile_tracker.application_menus.editing_selection_menu import EditingMenu
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.application_menus.editing_selection_menu import EditingMenu
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 def test_button_states(make_napari_viewer, solution_tracks_2d, click_node):

@@ -1,7 +1,7 @@
 import pytest
 
-from motile_tracker.import_export import geff_collection
-from motile_tracker.persistence.session import EditSession
+from mm_track.import_export import geff_collection
+from mm_track.persistence.session import EditSession
 
 
 def test_failed_image_loading_releases_session(geff_collection_store, monkeypatch):

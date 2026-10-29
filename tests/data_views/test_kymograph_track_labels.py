@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +136,7 @@ def test_kymograph_paint_rejects_cross_frame_stroke(kymograph_tracks_viewer):
     )
 
     with patch(
-        "motile_tracker.data_views.views.layers.kymograph_track_labels.show_info"
+        "mm_track.data_views.views.layers.kymograph_track_labels.show_info"
     ) as info_mock:
         labels_layer._on_paint(event)
 

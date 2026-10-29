@@ -2,8 +2,8 @@
 * @cmalinmayor
 
 # Anniek is the tree widget expert
-/src/motile_tracker/data_views/views/tree_view/* @anniekstok
+/src/mm_track/data_views/views/tree_view/* @anniekstok
 
 
 # Anniek is also the import/export expert
-/src/motile_tracker/import_export/* @anniekstok
+/src/mm_track/import_export/* @anniekstok

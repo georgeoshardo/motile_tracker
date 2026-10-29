@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from funtracks.user_actions import UserDeleteNode, UserUpdateNodeAttrs
 
-from motile_tracker.persistence.session import EditSession
+from mm_track.persistence.session import EditSession
 
 
 def snapshot(tracks):
@@ -39,7 +39,7 @@ def test_delete_reopen_undo_redo(solution_tracks_2d, tmp_path):
 
 
 def test_split_reopen_preserves_new_cell_and_masks(solution_tracks_2d, tmp_path):
-    from motile_tracker.data_views.views_coordinator.node_edits import (
+    from mm_track.data_views.views_coordinator.node_edits import (
         SplitNode,
         node_mask,
         plan_split,
@@ -158,7 +158,7 @@ def test_custom_attributes_survive(solution_tracks_2d, tmp_path):
 
 
 def test_group_delete_and_undo_across_restart(solution_tracks_2d, tmp_path):
-    from motile_tracker.persistence.features import change_feature
+    from mm_track.persistence.features import change_feature
 
     path = tmp_path / "tracks.geff"
     with EditSession.create(solution_tracks_2d, path) as session:
@@ -199,7 +199,7 @@ def test_process_exit_without_save_or_close(solution_tracks_2d, tmp_path):
             "-c",
             """
 import os, sys
-from motile_tracker.persistence.session import EditSession
+from mm_track.persistence.session import EditSession
 from funtracks.user_actions import UserDeleteNode
 session = EditSession.open(sys.argv[1])
 UserDeleteNode(session.tracks, 4)
@@ -332,7 +332,7 @@ def test_failed_initialization_does_not_poison_existing_geff(
 ):
     from funtracks.import_export import write_to_geff
 
-    from motile_tracker.persistence.session import has_history
+    from mm_track.persistence.session import has_history
 
     path = tmp_path / "tracks.geff"
     write_to_geff(solution_tracks_2d, path)
@@ -350,7 +350,7 @@ def test_failed_database_setup_removes_only_its_new_database(
     import zarr
     from funtracks.import_export import write_to_geff
 
-    from motile_tracker.persistence.session import has_history
+    from mm_track.persistence.session import has_history
 
     path = tmp_path / "tracks.geff"
     write_to_geff(solution_tracks_2d, path)
@@ -366,7 +366,7 @@ def test_failed_database_setup_removes_only_its_new_database(
 
 
 def test_measurement_toggle_is_saved_and_undoable(solution_tracks_2d, tmp_path):
-    from motile_tracker.persistence.features import toggle_feature
+    from mm_track.persistence.features import toggle_feature
 
     tracks = solution_tracks_2d
     if "area" in tracks.features:
@@ -385,7 +385,7 @@ def test_measurement_toggle_is_saved_and_undoable(solution_tracks_2d, tmp_path):
 
 
 def test_earlier_revision_can_be_reconstructed(solution_tracks_2d, tmp_path):
-    from motile_tracker.persistence.state import restore
+    from mm_track.persistence.state import restore
 
     before = snapshot(solution_tracks_2d)
     with EditSession.create(solution_tracks_2d, tmp_path / "tracks.geff") as session:
@@ -514,7 +514,7 @@ def test_history_records_do_not_repeat_the_entire_stack(solution_tracks_2d, tmp_
 def test_mask_edits_reopen_and_undo(solution_tracks_2d, tmp_path, operation):
     from funtracks.user_actions import UserUpdateSegmentation
 
-    from motile_tracker.data_views.views_coordinator.node_edits import MergeNodes
+    from mm_track.data_views.views_coordinator.node_edits import MergeNodes
 
     path = tmp_path / "tracks.geff"
     before = snapshot(solution_tracks_2d)

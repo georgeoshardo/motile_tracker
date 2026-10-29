@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +92,7 @@ def test_kymograph_point_move_cannot_cross_frame_boundary(kymograph_tracks_viewe
     points_layer.data[node_index] = np.asarray([60.0, 220.0])  # frame 2
 
     with patch(
-        "motile_tracker.data_views.views.layers.kymograph_track_points.show_info"
+        "mm_track.data_views.views.layers.kymograph_track_points.show_info"
     ) as info_mock:
         points_layer._update_data(MockEvent(action="changed"))
 

@@ -1,0 +1,96 @@
+name: mm-track
+display_name: mm_track
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/manifest.html for valid categories
+categories: ["Utilities"]
+contributions:
+  commands:
+    - id: mm-track.main_app
+      python_name: mm_track.application_menus.main_app:MainAppWidget
+      title: "Open all menus and the lineage view"
+    - id: mm-track.tracking_group
+      python_name: mm_track.application_menus.main_app:TrackingGroupWidget
+      title: "Open tracking widgets"
+    - id: mm-track.editing_group
+      python_name: mm_track.application_menus.main_app:EditingGroupWidget
+      title: "Open editing widgets"
+    - id: mm-track.getting_started
+      python_name: mm_track.application_menus.main_app:GettingStarted_LauncherWidget
+      title: "Open Getting started menu"
+    - id: mm-track.tracking
+      python_name: mm_track.application_menus.main_app:Tracking_LauncherWidget
+      title: "Open Tracking menu"
+    - id: mm-track.tracks_list
+      python_name: mm_track.application_menus.main_app:TrackList_LauncherWidget
+      title: "Open Tracks List menu"
+    - id: mm-track.kymograph_data
+      python_name: mm_track.application_menus.main_app:KymographData_LauncherWidget
+      title: "Open Kymograph Data menu"
+    - id: mm-track.editing_selection
+      python_name: mm_track.application_menus.main_app:EditingSelection_LauncherWidget
+      title: "Open Editing && Selection menu"
+    - id: mm-track.visualization
+      python_name: mm_track.application_menus.main_app:Visualization_LauncherWidget
+      title: "Open Visualization menu"
+    - id: mm-track.features
+      python_name: mm_track.application_menus.main_app:Feature_LauncherWidget
+      title: "Open Feature menu"
+    - id: mm-track.groups
+      python_name: mm_track.application_menus.main_app:Groups_LauncherWidget
+      title: "Open Groups menu"
+    - id: mm-track.table
+      python_name: mm_track.application_menus.main_app:Table_LauncherWidget
+      title: "Open Table menu"
+    - id: mm-track.lineage_view
+      python_name: mm_track.application_menus.main_app:LineageView_LauncherWidget
+      title: "Open Lineage View menu"
+    - id: mm-track.solve
+      python_name: mm_track.motile.backend.solve:solve
+      title: "Run motile tracking (backend only)"
+    - id: mm-track.Fluo_N2DL_HeLa
+      python_name: mm_track.example_data:Fluo_N2DL_HeLa
+      title: "Load Fluo-N2DL-HeLa tracking dataset"
+    - id: mm-track.Fluo_N2DL_HeLa_crop
+      python_name: mm_track.example_data:Fluo_N2DL_HeLa_crop
+      title: "Load Fluo-N2DL-HeLa tracking dataset (crop)"
+    - id: mm-track.Mouse_Embryo_Membrane
+      python_name: mm_track.example_data:Mouse_Embryo_Membrane
+      title: "Load Mouse Embryo_Membrane tracking dataset"
+  widgets:
+    - command: mm-track.main_app
+      display_name: Open all widgets
+    - command: mm-track.tracking_group
+      display_name: Open tracking widgets
+    - command: mm-track.editing_group
+      display_name: Open editing widgets
+    - command: mm-track.getting_started
+      display_name: Widget - Getting started
+    - command: mm-track.tracking
+      display_name: Widget - Tracking
+    - command: mm-track.tracks_list
+      display_name: Widget - Tracks List
+    - command: mm-track.kymograph_data
+      display_name: Widget - Kymograph Data
+    - command: mm-track.editing_selection
+      display_name: Widget - Editing & Selection
+    - command: mm-track.visualization
+      display_name: Widget - Visualization
+    - command: mm-track.features
+      display_name: Widget - Features
+    - command: mm-track.groups
+      display_name: Widget - Groups
+    - command: mm-track.table
+      display_name: Widget - Table
+    - command: mm-track.lineage_view
+      display_name: Widget - Lineage View
+  sample_data:
+    - command: mm-track.Fluo_N2DL_HeLa
+      key: "Fluo-N2DL-HeLa"
+      display_name: "Fluo-N2DL-HeLa (2D)"
+    - command: mm-track.Fluo_N2DL_HeLa_crop
+      key: "Fluo-N2DL-HeLa-crop"
+      display_name: "Fluo-N2DL-HeLa crop (2D)"
+    - command: mm-track.Mouse_Embryo_Membrane
+      key: "Mouse_Embryo_Membrane"
+      display_name: "Mouse Embryo Membranes (3D)"

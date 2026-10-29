@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from motile_tracker.data_views.views_coordinator.mask_split import (
+from mm_track.data_views.views_coordinator.mask_split import (
     bright_cells_in_frame,
     cells_are_bright,
     cut_contrast,

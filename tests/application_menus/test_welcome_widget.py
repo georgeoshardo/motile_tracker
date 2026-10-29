@@ -2,7 +2,7 @@
 
 from qtpy.QtWidgets import QLabel, QTextBrowser
 
-from motile_tracker.application_menus.welcome_widget import WelcomeWidget
+from mm_track.application_menus.welcome_widget import WelcomeWidget
 
 
 def test_welcome_widget_initializes(qtbot):
@@ -13,11 +13,11 @@ def test_welcome_widget_initializes(qtbot):
     assert widget is not None
     # Should have a layout
     assert widget.layout() is not None
-    # Should contain a QLabel with 'Motile Tracker'
+    # Should contain a QLabel with 'mm_track'
     found_label = False
     for i in range(widget.layout().count()):
         item = widget.layout().itemAt(i).widget()
-        if isinstance(item, QLabel) and "Motile Tracker" in item.text():
+        if isinstance(item, QLabel) and "mm_track" in item.text():
             found_label = True
     assert found_label
     # Should contain at least one QTextBrowser

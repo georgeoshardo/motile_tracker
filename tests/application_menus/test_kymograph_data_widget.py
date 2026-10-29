@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from motile_tracker.application_menus.kymograph_data_widget import KymographDataWidget
-from motile_tracker.application_menus.main_app import MENU_WIDGETS
-from motile_tracker.data_views.views_coordinator.tracks_viewer import TracksViewer
+from mm_track.application_menus.kymograph_data_widget import KymographDataWidget
+from mm_track.application_menus.main_app import MENU_WIDGETS
+from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
 def test_widget_is_registered_in_the_menus():

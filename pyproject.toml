@@ -3,13 +3,14 @@ requires = ["setuptools>=70", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "motile-tracker"
+name = "mm-track"
 dynamic = ["version"]
-description = "Application for interactive tracking with global optimization"
+description = "napari plugin for curating cell lineages in mother machine trenches"
 readme = "README.md"
 license = { text = "BSD 3-Clause License" }
 requires-python = ">=3.11"
 authors = [
+    { name = "Georgeos Hardo" },
     { name = "Caroline Malin-Mayor", email = "malinmayorc@janelia.hhmi.org" },
 ]
 classifiers = [
@@ -56,7 +57,7 @@ dependencies =[
     # levels (blosc2 >= 4.12 is cp311-abi3, uharfbuzz is cp310-abi3), where
     # cython_function_or_method has a different struct size. Whichever imports second
     # dies with "Shared Cython type cython_function_or_method has the wrong size".
-    # motile_tracker is the only place these two meet, so the pin belongs here.
+    # mm_track is the only place these two meet, so the pin belongs here.
     # Drop it once Cython encodes the limited-API level in that module name, or once
     # the two agree on a level.
     "blosc2>=4.11,<4.12",
@@ -72,14 +73,14 @@ all = [
 ]
 
 [project.entry-points."napari.manifest"]
-motile-tracker = "motile_tracker:napari.yaml"
+mm-track = "mm_track:napari.yaml"
 
 [project.urls]
-"Bug Tracker" = "https://github.com/funkelab/motile_tracker/issues"
-"Documentation" ="https://funkelab.github.io/motile_tracker/"
+"Source" = "https://github.com/georgeoshardo/motile_tracker"
+"Derived from" = "https://github.com/funkelab/motile_tracker"
 
 [project.scripts]
-motile_tracker = "motile_tracker.__main__:main"
+mm_track = "mm_track.__main__:main"
 
 [dependency-groups]
 testing =[
@@ -122,7 +123,7 @@ addopts = "--ignore=tests/benchmarks"
 # that pointing pytest at the tests/benchmarks directory discovers them.
 python_files = ["test_*.py", "bench_*.py"]
 filterwarnings = [
-    # Temporarily disabled: motile_tracker still converts to the deprecated
+    # Temporarily disabled: mm_track still converts to the deprecated
     # SolutionTracks when emitting tracks, because the views/actions require
     # track IDs. Re-add when we refactor to operate on Tracks directly, ahead
     # of the next major funtracks release.
@@ -130,7 +131,12 @@ filterwarnings = [
 ]
 
 [tool.setuptools_scm]
-write_to = "src/motile_tracker/_version.py"
+write_to = "src/mm_track/_version.py"
+
+[tool.setuptools_scm.scm.git]
+# only plain release tags: the repository also has namespaced ones fetched from
+# upstream (motile_tracker/v5.0.1, motile_tracker/track-viewer)
+describe_command = "git describe --dirty --tags --long --abbrev=40 --match v[0-9]*"
 
 [tool.ruff]
 line-length = 88

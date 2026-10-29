@@ -2,7 +2,7 @@ import warnings
 
 import numpy as np
 
-from motile_tracker.motile.backend import MotileRun, SolverParams
+from mm_track.motile.backend import MotileRun, SolverParams
 
 
 def test_geff_path_finds_saved_geff(tmp_path, graph_2d):
