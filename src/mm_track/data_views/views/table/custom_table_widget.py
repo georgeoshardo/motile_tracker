@@ -70,7 +70,11 @@ class TrackTableModel(QAbstractTableModel):
             # Single vectorized colormap.map call over all row labels: colormap.map
             # has a large fixed per-call overhead, so mapping row-by-row is O(rows)
             # slow. Map once, then build the per-row QColors.
-            mapped = colormap.map(np.asarray(ids))
+            # np.array copies: pandas >= 3 hands out read-only column views, which
+            # napari's compiled label-colormap mapping refuses ("buffer source array
+            # is read-only"). The error aborted the tracks_updated signal, so later
+            # listeners such as the lineage tree view never drew the new tracks.
+            mapped = colormap.map(np.array(ids))
             for rgba in mapped:
                 if rgba[3] == 0:
                     rgba = [0, 0, 0, 0]

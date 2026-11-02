@@ -79,6 +79,9 @@ class KymographTrackPoints(Points):
             properties={"node_id": [], "track_id": []},
             border_color=[1, 1, 1, 1],
             blending="translucent_no_depth",
+            # A kymograph page is thousands of pixels wide, so at the zoom that fits
+            # a page the 5-pixel markers would shrink to a dot; keep them legible.
+            canvas_size_limits=(6, 10000),
         )
 
         # Key bindings (should be specified both on the viewer (in tracks_viewer)
