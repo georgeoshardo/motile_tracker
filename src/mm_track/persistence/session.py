@@ -310,7 +310,7 @@ class EditSession:
             if fmt is not None:
                 fmt = sf.rebase(fmt, self.path, path, labels_target=copied_labels)
                 copy.set_metadata("source_format", fmt)
-                (path / ".zattrs").write_text(fmt["root_text"])
+                (path / sf.root_file(fmt)).write_text(fmt["root_text"])
             else:
                 root = zarr.open_group(path, mode="a")
                 root.attrs.update(rebase_references(dict(root.attrs), self.path, path))

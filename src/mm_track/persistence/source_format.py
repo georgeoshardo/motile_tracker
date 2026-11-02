@@ -28,6 +28,12 @@ Each publication rebuilds the dataset in that format from the edited tracks
 previous one: the GEFF validator including its data checks, the dataset's
 format, and agreement between the label array and the masks.
 
+Both zarr formats are kept. A zarr v2 GEFF keeps its root attributes in
+``.zattrs`` and each array's encoding in ``.zarray``; a zarr v3 GEFF keeps both
+in ``zarr.json`` files. The recorded format's ``root_text`` is the root metadata
+file as it is on disk (``.zattrs`` or ``zarr.json``); :func:`root_attrs` and
+:func:`root_text_with` read and replace the attributes in it.
+
 Only datasets whose format can be reproduced are handled; :func:`capture` raises
 :class:`UnsupportedFormat` otherwise, and the caller must then not publish over
 the source.
@@ -121,10 +127,60 @@ def _mask_flat(mask, frame_shape) -> np.ndarray:
     return np.ravel_multi_index(coords, frame_shape)
 
 
-def _array_dirs(group: Path) -> list[Path]:
-    return sorted(
-        p.parent for p in group.rglob(".zarray") if HISTORY_GROUP not in p.parts
+ROOT_FILE = {2: ".zattrs", 3: "zarr.json"}
+
+
+def zarr_format_of(group: Path) -> int | None:
+    """2 or 3 for a zarr group of that format, else None."""
+    group = Path(group)
+    if (group / ".zgroup").is_file():
+        return 2
+    zjson = group / "zarr.json"
+    if zjson.is_file() and json.loads(zjson.read_text()).get("node_type") == "group":
+        return 3
+    return None
+
+
+def format_version(fmt: dict) -> int:
+    """The zarr format of a recorded dataset format (formats recorded before v3
+    support are v2)."""
+    return int(fmt.get("zarr_format", 2))
+
+
+def root_file(fmt: dict) -> str:
+    """The file that holds the dataset's root attributes."""
+    return ROOT_FILE[format_version(fmt)]
+
+
+def root_attrs(fmt: dict) -> dict:
+    """The root attributes of a recorded format (``{"geff": ...}``)."""
+    doc = json.loads(fmt["root_text"])
+    return doc if format_version(fmt) == 2 else doc.get("attributes", {})
+
+
+def root_text_with(fmt: dict, attrs: dict, style: dict | None = None) -> str:
+    """The root metadata file of `fmt` with its attributes replaced by `attrs`."""
+    style = fmt["root_style"] if style is None else style
+    if format_version(fmt) == 2:
+        return _dumps(attrs, style)
+    doc = json.loads(fmt["root_text"])
+    doc["attributes"] = attrs
+    return _dumps(doc, style)
+
+
+def _is_v3_array_meta(path: Path) -> bool:
+    return (
+        path.name == "zarr.json"
+        and json.loads(path.read_text()).get("node_type") == "array"
     )
+
+
+def _array_dirs(group: Path, zarr_format: int = 2) -> list[Path]:
+    if zarr_format == 2:
+        metas = group.rglob(".zarray")
+    else:
+        metas = (p for p in group.rglob("zarr.json") if _is_v3_array_meta(p))
+    return sorted(p.parent for p in metas if HISTORY_GROUP not in p.parts)
 
 
 def _read(array_dir: Path) -> np.ndarray:
@@ -142,30 +198,44 @@ def read_layout(geff_path) -> dict:
     files of the arrays it refers to (``related_objects``), keyed by object type.
 
     Raises:
-        UnsupportedFormat: if the GEFF is not a zarr v2 group with fixed-length
-            properties.
+        UnsupportedFormat: if the GEFF is not a zarr v2 or v3 group with
+            fixed-length properties.
     """
     geff_path = Path(geff_path).resolve()
-    root_file = geff_path / ".zattrs"
-    if not root_file.is_file() or not (geff_path / ".zgroup").is_file():
-        raise UnsupportedFormat("only zarr v2 GEFF groups keep their format")
-    root_text = root_file.read_text()
+    zarr_format = zarr_format_of(geff_path)
+    if zarr_format is None or not (geff_path / ROOT_FILE[zarr_format]).is_file():
+        raise UnsupportedFormat("not a zarr v2 or v3 GEFF group")
+    root_text = (geff_path / ROOT_FILE[zarr_format]).read_text()
 
     files, arrays = {}, {}
+    array_dirs = _array_dirs(geff_path, zarr_format)
+    array_rels = {d.relative_to(geff_path).as_posix() for d in array_dirs}
     for file in sorted(geff_path.rglob("*")):
         rel = file.relative_to(geff_path)
         if rel.parts and rel.parts[0] == HISTORY_GROUP or not file.is_file():
             continue
-        if file.name in (".zgroup", ".zattrs") and rel != Path(".zattrs"):
+        if zarr_format == 2:
+            group_file = file.name in (".zgroup", ".zattrs") and rel != Path(".zattrs")
+        else:  # the sub-groups' zarr.json; the root's is root_text
+            group_file = (
+                file.name == "zarr.json"
+                and rel != Path("zarr.json")
+                and rel.parent.as_posix() not in array_rels
+            )
+        if group_file:
             files[rel.as_posix()] = file.read_text()
-    for array_dir in _array_dirs(geff_path):
+    for array_dir in array_dirs:
         rel = array_dir.relative_to(geff_path).as_posix()
-        arrays[rel] = {
-            "zarray": json.loads((array_dir / ".zarray").read_text()),
-            "zattrs": (array_dir / ".zattrs").read_text()
-            if (array_dir / ".zattrs").exists()
-            else None,
-        }
+        if zarr_format == 2:
+            arrays[rel] = {
+                "zarray": json.loads((array_dir / ".zarray").read_text()),
+                "zattrs": (array_dir / ".zattrs").read_text()
+                if (array_dir / ".zattrs").exists()
+                else None,
+            }
+        else:
+            text = (array_dir / "zarr.json").read_text()
+            arrays[rel] = {"zarr_json": json.loads(text), "zarr_json_text": text}
     for required in ("nodes/ids", "edges/ids"):
         if required not in arrays:
             raise UnsupportedFormat(f"missing {required}")
@@ -182,7 +252,9 @@ def read_layout(geff_path) -> dict:
         return names
 
     related = {}
-    geff = (json.loads(root_text).get("geff")) or {}
+    root_doc = json.loads(root_text)
+    attrs = root_doc if zarr_format == 2 else root_doc.get("attributes", {})
+    geff = attrs.get("geff") or {}
     for obj in geff.get("related_objects") or []:
         target = (geff_path / obj.get("path", "")).resolve()
         if obj.get("path") and target.is_dir() and obj.get("type") not in related:
@@ -192,6 +264,7 @@ def read_layout(geff_path) -> dict:
                 if (target / name).is_file()
             }
     return {
+        "zarr_format": zarr_format,
         "root_text": root_text,
         "root_style": _json_style(root_text),
         "files": files,
@@ -206,7 +279,7 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
     """Record a GEFF dataset's format and its cells as they are now.
 
     Args:
-        geff_path: The GEFF group (zarr v2) on disk, in its original format.
+        geff_path: The GEFF group (zarr v2 or v3) on disk, in its original format.
         tracks: The tracks loaded from it, before any edit. Used to verify that
             ids, times and masks line up with the files, and to learn the id
             offset funtracks applied on import.
@@ -216,14 +289,12 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
         UnsupportedFormat: if the format cannot be reproduced.
     """
     geff_path = Path(geff_path).resolve()
-    if (geff_path / ".zattrs").is_file() and is_native(
-        json.loads((geff_path / ".zattrs").read_text())
-    ):
-        raise UnsupportedFormat("written by funtracks; uses the native format")
     layout = read_layout(geff_path)
+    if is_native(root_attrs(layout)):
+        raise UnsupportedFormat("written by funtracks; uses the native format")
     root_text, files, arrays = layout["root_text"], layout["files"], layout["arrays"]
     node_props, edge_props = layout["node_props"], layout["edge_props"]
-    geff = json.loads(root_text).get("geff") or {}
+    geff = root_attrs(layout).get("geff") or {}
     node_ids = _read(geff_path / "nodes/ids").astype(np.int64)
     edge_ids = _read(geff_path / "edges/ids").astype(np.int64).reshape(-1, 2)
     values = {p: _read(geff_path / f"nodes/props/{p}/values") for p in node_props}
@@ -375,6 +446,7 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
 
     return {
         "version": FORMAT_VERSION,
+        "zarr_format": layout["zarr_format"],
         "root_text": root_text,
         "root_style": layout["root_style"],
         "files": files,
@@ -593,6 +665,9 @@ def _template_chunks(template, shape):
 
 
 def _write_array(path: Path, data: np.ndarray, template: dict) -> None:
+    if "zarr_json" in template:
+        _write_array_v3(path, data, template)
+        return
     import numcodecs
 
     meta = template["zarray"]
@@ -628,12 +703,65 @@ def _write_array(path: Path, data: np.ndarray, template: dict) -> None:
         (path / ".zattrs").write_text(template["zattrs"])
 
 
+def _write_array_v3(path: Path, data: np.ndarray, template: dict) -> None:
+    """Write a zarr v3 array with the template's metadata, at the data's shape.
+
+    The metadata file keeps the template's JSON layout, so an array rewritten
+    with the same shape is byte-identical to the original.
+    """
+    meta = json.loads(json.dumps(template["zarr_json"]))
+    grid = meta["chunk_grid"]["configuration"]
+    template_shape = list(meta["shape"])
+    meta["shape"] = list(data.shape)
+    grid["chunk_shape"] = list(
+        _template_chunks(
+            {"chunks": grid["chunk_shape"], "shape": template_shape}, data.shape
+        )
+    )
+    text = template.get("zarr_json_text")
+    style = _json_style(text) if text is not None else {"indent": 2, "newline": ""}
+    if text is None or json.loads(text) != meta:
+        text = _dumps(meta, style)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "zarr.json").write_text(text)
+    if data.size:
+        zarr.open_array(str(path), mode="r+")[...] = data
+
+
 def _missing_template(values_template: dict) -> dict:
+    if "zarr_json" in values_template:
+        meta = json.loads(json.dumps(values_template["zarr_json"]))
+        meta.update(data_type="bool", fill_value=False)
+        meta["shape"] = meta["shape"][:1]
+        grid = meta["chunk_grid"]["configuration"]
+        grid["chunk_shape"] = grid["chunk_shape"][:1]
+        # a one-byte type has no byte order; keep the compressors
+        meta["codecs"] = [
+            {"name": "bytes"} if codec.get("name") == "bytes" else codec
+            for codec in meta.get("codecs", [])
+        ]
+        meta.pop("dimension_names", None)
+        return {"zarr_json": meta}
     meta = dict(values_template["zarray"])
     meta.update(dtype="|b1", fill_value=False)
     meta["shape"] = meta["shape"][:1]
     meta["chunks"] = meta["chunks"][:1]
     return {"zarray": meta, "zattrs": values_template.get("zattrs")}
+
+
+def _array_meta(template: dict) -> dict:
+    """An array template's metadata (``.zarray`` or ``zarr.json``)."""
+    return template["zarr_json"] if "zarr_json" in template else template["zarray"]
+
+
+def _dtype(template: dict) -> np.dtype:
+    meta = _array_meta(template)
+    return np.dtype(meta["data_type"] if "zarr_json" in template else meta["dtype"])
+
+
+def _trailing(template: dict) -> tuple:
+    """The shape of one row (a node's or edge's value) of an array template."""
+    return tuple(_array_meta(template)["shape"][1:])
 
 
 def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
@@ -678,8 +806,8 @@ def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
         if role == "position_alias":
             return [content["pos"][n] for n in order], None
         column, missing = [], []
-        template = arrays[f"nodes/props/{name}/values"]["zarray"]
-        filler = np.zeros(template["shape"][1:], dtype=template["dtype"]).tolist()
+        template = arrays[f"nodes/props/{name}/values"]
+        filler = np.zeros(_trailing(template), dtype=_dtype(template)).tolist()
         for n in order:
             a = archived.get(str(n))
             value = None if a is None or n in content["changed"] else a["props"][name]
@@ -690,15 +818,15 @@ def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
     ids_template = arrays["nodes/ids"]
     _write_array(
         geff_out / "nodes/ids",
-        np.asarray(order, dtype=ids_template["zarray"]["dtype"]),
+        np.asarray(order, dtype=_dtype(ids_template)),
         ids_template,
     )
     for name in fmt["node_props"]:
         template = arrays[f"nodes/props/{name}/values"]
         column, missing = node_column(name)
-        dtype = np.dtype(template["zarray"]["dtype"])
-        trailing = tuple(template["zarray"]["shape"][1:])
-        data = np.asarray(column, dtype=dtype).reshape((len(order), *trailing))
+        data = np.asarray(column, dtype=_dtype(template)).reshape(
+            (len(order), *_trailing(template))
+        )
         _write_array(geff_out / f"nodes/props/{name}/values", data, template)
         missing_rel = f"nodes/props/{name}/missing"
         if missing is not None or missing_rel in arrays:
@@ -709,23 +837,18 @@ def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
             _write_array(geff_out / missing_rel, mask, m_template)
 
     edge_template = arrays["edges/ids"]
-    edge_data = np.asarray(edge_order, dtype=edge_template["zarray"]["dtype"]).reshape(
-        -1, 2
-    )
+    edge_data = np.asarray(edge_order, dtype=_dtype(edge_template)).reshape(-1, 2)
     _write_array(geff_out / "edges/ids", edge_data, edge_template)
     for name in fmt["edge_props"]:
         template = arrays[f"edges/props/{name}/values"]
         column, missing = [], []
-        filler = np.zeros(
-            template["zarray"]["shape"][1:], dtype=template["zarray"]["dtype"]
-        ).tolist()
+        filler = np.zeros(_trailing(template), dtype=_dtype(template)).tolist()
         for s, t in edge_order:
             value = (fmt["edge_archived"].get(f"{s},{t}") or {}).get(name)
             missing.append(value is None)
             column.append(filler if value is None else value)
-        dtype = np.dtype(template["zarray"]["dtype"])
-        data = np.asarray(column, dtype=dtype).reshape(
-            (len(edge_order), *template["zarray"]["shape"][1:])
+        data = np.asarray(column, dtype=_dtype(template)).reshape(
+            (len(edge_order), *_trailing(template))
         )
         _write_array(geff_out / f"edges/props/{name}/values", data, template)
         missing_rel = f"edges/props/{name}/missing"
@@ -736,7 +859,7 @@ def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
             )
 
     # root metadata: the original, with axis ranges brought up to date
-    attrs = json.loads(fmt["root_text"])
+    attrs = root_attrs(fmt)
     geff = attrs["geff"]
     for axis in geff.get("axes") or []:
         if axis["name"] == roles["time"]:
@@ -750,7 +873,7 @@ def write(tracks, fmt, geff_out, labels_out=None, *, drop_extra=False) -> dict:
             axis["max"] = float(max(column))
     if drop_extra:
         geff.pop("extra", None)
-    (geff_out / ".zattrs").write_text(_dumps(attrs, fmt["root_style"]))
+    (geff_out / root_file(fmt)).write_text(root_text_with(fmt, attrs))
 
     if labels_out is not None and fmt.get("labels"):
         write_labels(content, fmt, labels_out)
@@ -797,23 +920,28 @@ def check(geff_dir, labels_dir, fmt, content, *, drop_extra=False) -> list[str]:
         problems.append(f"GEFF validation: {exc}")
 
     # same format: properties, encodings, metadata keys
+    zarr_format = format_version(fmt)
+    meta_file = ".zarray" if zarr_format == 2 else "zarr.json"
+    # the array's shape and chunking follow its data; everything else is the format
+    sized = ("shape", "chunks") if zarr_format == 2 else ("shape", "chunk_grid")
     written = {
-        p.parent.relative_to(geff_dir).as_posix(): json.loads((p).read_text())
-        for p in geff_dir.rglob(".zarray")
+        d.relative_to(geff_dir).as_posix(): json.loads((d / meta_file).read_text())
+        for d in _array_dirs(geff_dir, zarr_format)
     }
     for rel, template in fmt["arrays"].items():
         meta = written.get(rel)
         if meta is None:
             problems.append(f"array {rel} missing")
             continue
-        for key, value in template["zarray"].items():
-            if key not in ("shape", "chunks") and meta.get(key) != value:
+        for key, value in _array_meta(template).items():
+            if key not in sized and meta.get(key) != value:
                 problems.append(f"array {rel}: {key} {meta.get(key)!r} != {value!r}")
     for rel in written:
         if rel not in fmt["arrays"] and not rel.endswith("/missing"):
             problems.append(f"unexpected array {rel}")
-    original = json.loads(fmt["root_text"])["geff"]
-    current = json.loads((geff_dir / ".zattrs").read_text())["geff"]
+    original = root_attrs(fmt)["geff"]
+    current_doc = json.loads((geff_dir / root_file(fmt)).read_text())
+    current = (current_doc if zarr_format == 2 else current_doc["attributes"])["geff"]
     expected_keys = set(original) - ({"extra"} if drop_extra else set())
     if set(current) != expected_keys:
         problems.append(f"metadata keys {sorted(current)} != {sorted(expected_keys)}")
@@ -902,8 +1030,13 @@ def conform(fmt: dict, template: dict, *, drop_extra: bool = False) -> dict:
     """
     import copy
 
-    own_root = json.loads(fmt["root_text"])
-    new_root = json.loads(template["root_text"])
+    if format_version(fmt) != format_version(template):
+        raise UnsupportedFormat(
+            f"zarr v{format_version(fmt)} dataset, zarr v{format_version(template)} "
+            "template; cannot conform"
+        )
+    own_root = root_attrs(fmt)
+    new_root = root_attrs(template)
     own, new = own_root["geff"], new_root["geff"]
 
     def axes_kind(geff):
@@ -940,7 +1073,7 @@ def conform(fmt: dict, template: dict, *, drop_extra: bool = False) -> dict:
             new.pop(key, None)
 
     out = copy.deepcopy(fmt)
-    out["root_text"] = _dumps(new_root, template["root_style"])
+    out["root_text"] = root_text_with(template, new_root)
     out["root_style"] = template["root_style"]
     out["files"] = dict(template["files"])
     out["arrays"] = copy.deepcopy(template["arrays"])
@@ -989,7 +1122,7 @@ def rebase(fmt, source, destination, labels_target=None):
     import os
 
     fmt = copy.deepcopy(fmt)
-    attrs = json.loads(fmt["root_text"])
+    attrs = root_attrs(fmt)
     for obj in attrs["geff"].get("related_objects") or []:
         reference = obj.get("path")
         if not reference or "://" in reference:
@@ -999,7 +1132,7 @@ def rebase(fmt, source, destination, labels_target=None):
         else:
             target = (Path(source) / reference).resolve()
             obj["path"] = os.path.relpath(target, destination)
-    fmt["root_text"] = _dumps(attrs, fmt["root_style"])
+    fmt["root_text"] = root_text_with(fmt, attrs)
     if fmt.get("labels") and labels_target is not None:
         fmt["labels"]["path"] = os.path.relpath(labels_target, destination)
     elif fmt.get("labels"):

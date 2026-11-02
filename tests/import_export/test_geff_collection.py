@@ -7,6 +7,7 @@ import numpy as np
 from funtracks.import_export import import_from_geff
 from geff import GeffMetadata
 from geff import write as write_geff
+from geff_spec import RelatedObject
 
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 from mm_track.import_export.geff_collection import (
@@ -70,6 +71,19 @@ def test_read_related_arrays_resolves_paths_relative_to_the_geff(
     assert related.labels_path == geff_collection_store / "trench_a" / "segmentation"
     assert related.label_prop == "seg_id"
     assert related.image_path == geff_collection_store / "trench_a" / "images"
+
+
+def test_read_related_arrays_reads_node_prop(geff_collection_store):
+    # geff-spec 1.2.1 replaced label_prop with node_prop
+    geff_path = geff_collection_store / "trench_a" / "tracking_graph.geff"
+    metadata = GeffMetadata.read(geff_path)
+    metadata.related_objects[0] = RelatedObject(
+        type="labels", path="../segmentation", node_prop="seg_id"
+    )
+
+    related = read_related_arrays(geff_path, metadata)
+
+    assert related.label_prop == "seg_id"
 
 
 def test_read_related_arrays_ignores_missing_objects(geff_collection_store, caplog):

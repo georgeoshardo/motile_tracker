@@ -56,7 +56,21 @@ STORED_ORDER = [6, 2, 0, 9, 4, 1, 12, 8, 5, 11, 3]  # not in id order, like the 
 COLUMNS = (3, 9)
 
 
-def _array(path, data, chunks=None):
+def _array(path, data, chunks=None, zarr_format=2):
+    if zarr_format == 3:
+        array = zarr.create_array(
+            store=str(path),
+            shape=data.shape,
+            chunks=chunks or tuple(max(1, s) for s in data.shape),
+            dtype=data.dtype,
+            zarr_format=3,
+            compressors=zarr.codecs.ZstdCodec(level=0, checksum=False),
+            fill_value=0,
+            overwrite=True,
+        )
+        if data.size:
+            array[...] = data
+        return
     import numcodecs
 
     array = zarr.create_array(
@@ -75,8 +89,19 @@ def _array(path, data, chunks=None):
         array[...] = data
 
 
-def _group(path):
-    zarr.open_group(str(path), mode="w", zarr_format=2)
+def _group(path, zarr_format=2):
+    zarr.open_group(str(path), mode="w", zarr_format=zarr_format)
+
+
+def root_meta(geff: Path) -> dict:
+    """A GEFF's root attributes, from ``.zattrs`` (zarr v2) or ``zarr.json`` (v3)."""
+    if (geff / ".zattrs").is_file():
+        return json.loads((geff / ".zattrs").read_text())
+    return json.loads((geff / "zarr.json").read_text())["attributes"]
+
+
+def root_name(geff: Path) -> str:
+    return ".zattrs" if sf.zarr_format_of(geff) == 2 else "zarr.json"
 
 
 ARCHIVE_AXES = {
@@ -86,7 +111,9 @@ ARCHIVE_AXES = {
 RAW_AXES = {"axis_names": ["time", "y", "x"]}
 
 
-def write_trench(group: Path, *, break_tracklet: bool, raw: bool = False):
+def write_trench(
+    group: Path, *, break_tracklet: bool, raw: bool = False, zarr_format: int = 2
+):
     """A trench in the archive's layout, or with ``raw`` in the layout of the raw
     Trackastra export: 32-bit time, label and positions, node and link
     ``weight`` properties, another property order, its own ``extra``, no
@@ -120,9 +147,9 @@ def write_trench(group: Path, *, break_tracklet: bool, raw: bool = False):
     images[...] = 100.0 - labels.astype(np.float32)
 
     geff = group / "tracking_graph.geff"
-    _group(geff)
+    _group(geff, zarr_format)
     for sub in ("nodes", "nodes/props", "edges", "edges/props"):
-        _group(geff / sub)
+        _group(geff / sub, zarr_format)
     ids = np.asarray(STORED_ORDER, dtype=np.uint64)
     t = np.asarray([CELLS[n][0] for n in STORED_ORDER], dtype=np.int64)
     y = np.asarray(
@@ -167,14 +194,16 @@ def write_trench(group: Path, *, break_tracklet: bool, raw: bool = False):
         extra = {
             "selected_cleanliness_export": {"trench_id": 1, "after_continuity_count": 3}
         }
-    _array(geff / "nodes/ids", ids)
+    _array(geff / "nodes/ids", ids, zarr_format=zarr_format)
     for name, values in props.items():
-        _group(geff / "nodes/props" / name)
-        _array(geff / "nodes/props" / name / "values", values)
-    _array(geff / "edges/ids", np.asarray(LINKS, dtype=np.uint64))
+        _group(geff / "nodes/props" / name, zarr_format)
+        _array(geff / "nodes/props" / name / "values", values, zarr_format=zarr_format)
+    _array(
+        geff / "edges/ids", np.asarray(LINKS, dtype=np.uint64), zarr_format=zarr_format
+    )
     for name, values in edge_props.items():
-        _group(geff / "edges/props" / name)
-        _array(geff / "edges/props" / name / "values", values)
+        _group(geff / "edges/props" / name, zarr_format)
+        _array(geff / "edges/props" / name / "values", values, zarr_format=zarr_format)
     meta = {
         "geff": {
             "geff_version": "1.1",
@@ -244,28 +273,41 @@ def write_trench(group: Path, *, break_tracklet: bool, raw: bool = False):
             "extra": extra,
         }
     }
-    (geff / ".zattrs").write_text(json.dumps(meta, indent=2))
+    if zarr_format == 2:
+        (geff / ".zattrs").write_text(json.dumps(meta, indent=2))
+    else:
+        zarr.open_group(str(geff), mode="r+").attrs.update(meta)
     return geff
 
 
+@pytest.fixture(params=[2, 3], ids=["zarr_v2", "zarr_v3"])
+def zarr_format(request):
+    """Every dataset fixture is tried as a zarr v2 and a zarr v3 GEFF."""
+    return request.param
+
+
 @pytest.fixture
-def archive(tmp_path):
+def archive(tmp_path, zarr_format):
     """A one-trench store in the archive's format, with an archived tracklet break."""
     store = tmp_path / "trenches.zarr"
     store.mkdir()
     (store / "zarr.json").write_text(
         json.dumps({"attributes": {}, "zarr_format": 3, "node_type": "group"}, indent=2)
     )
-    geff = write_trench(store / "trench_a", break_tracklet=True)
+    geff = write_trench(
+        store / "trench_a", break_tracklet=True, zarr_format=zarr_format
+    )
     pristine = tmp_path / "pristine.zarr"
     shutil.copytree(store, pristine)
     return geff, pristine / "trench_a" / "tracking_graph.geff"
 
 
 @pytest.fixture
-def valid_archive(tmp_path):
+def valid_archive(tmp_path, zarr_format):
     store = tmp_path / "valid.zarr"
-    return write_trench(store / "trench_a", break_tracklet=False)
+    return write_trench(
+        store / "trench_a", break_tracklet=False, zarr_format=zarr_format
+    )
 
 
 def files(root: Path) -> dict:
@@ -345,8 +387,9 @@ def test_rebuild_fixes_only_archived_tracklet_breaks(archive, tmp_path):
     sf.write(tracks, fmt, out, tmp_path / "out" / "segmentation")
 
     before, after = files(geff), files(out)
+    chunk = "0" if sf.zarr_format_of(geff) == 2 else "c/0"  # v3 default chunk keys
     assert [k for k in before if before[k] != after.get(k)] == [
-        "nodes/props/tracklet/values/0"
+        f"nodes/props/tracklet/values/{chunk}"
     ]
     validate(out)
     _, table, _, _ = published(out)
@@ -382,7 +425,7 @@ def test_opening_writes_nothing(archive, tmp_path):
 
 def test_first_edit_publishes_in_the_dataset_format(archive, tmp_path):
     geff, _ = archive
-    original_meta = json.loads((geff / ".zattrs").read_text())
+    original_meta = root_meta(geff)
     session, tracks = open_for_editing(geff, tmp_path)
 
     UserDeleteNode(tracks, internal(4))
@@ -404,7 +447,7 @@ def test_first_edit_publishes_in_the_dataset_format(archive, tmp_path):
     assert (2, 4) not in edges
     assert not np.any(labels[3] == 1)  # the deleted cell's label is gone
     assert np.count_nonzero(labels[3] == 3) == 5 * 6  # the other cell is untouched
-    meta = json.loads((geff / ".zattrs").read_text())
+    meta = root_meta(geff)
     assert meta["geff"]["related_objects"] == original_meta["geff"]["related_objects"]
     assert meta["geff"]["track_node_props"] == original_meta["geff"]["track_node_props"]
     assert meta["geff"]["extra"] == original_meta["geff"]["extra"]
@@ -608,7 +651,7 @@ def test_attach_format_to_an_older_history_and_republish(archive):
 def test_attach_format_refuses_a_different_reference(archive, tmp_path):
     geff, pristine = archive
     other = tmp_path / "other.zarr" / "trench_a"
-    write_trench(other, break_tracklet=False)
+    write_trench(other, break_tracklet=False, zarr_format=sf.zarr_format_of(geff))
     labels = zarr.open_array(str(other / "segmentation"), mode="r+")
     data = labels[:]
     data[0, 2, 3] = 0  # one pixel differs
@@ -623,7 +666,9 @@ def test_attach_format_refuses_a_different_reference(archive, tmp_path):
 def test_export_writes_a_release_without_histories_or_extra(archive, tmp_path):
     geff, _ = archive
     store = geff.parent.parent
-    write_trench(store / "trench_b", break_tracklet=False)
+    write_trench(
+        store / "trench_b", break_tracklet=False, zarr_format=sf.zarr_format_of(geff)
+    )
     untouched = files(store / "trench_b")
     for trench, edit in (("trench_a", True), ("trench_b", False)):
         path = store / trench / "tracking_graph.geff"
@@ -646,14 +691,12 @@ def test_export_writes_a_release_without_histories_or_extra(archive, tmp_path):
     assert (out / "zarr.json").is_file()
     assert not list(out.rglob("edit_history")) and not list(out.rglob("writer.lock"))
     for trench in ("trench_a", "trench_b"):
-        meta = json.loads(
-            (out / trench / "tracking_graph.geff" / ".zattrs").read_text()
-        )
+        meta = root_meta(out / trench / "tracking_graph.geff")
         assert "extra" not in meta["geff"]
         validate(out / trench / "tracking_graph.geff")
     released_b = files(out / "trench_b")
     assert [k for k in untouched if untouched[k] != released_b.get(k)] == [
-        "tracking_graph.geff/.zattrs"
+        f"tracking_graph.geff/{root_name(geff)}"
     ]
     by_name = {row["dataset"]: row for row in rows}
     assert by_name["trench_a"]["cells_removed"] == 1
@@ -688,7 +731,9 @@ def test_attach_format_records_nothing_unless_every_dataset_matches(archive, tmp
 
     geff, pristine = archive
     store = geff.parent.parent
-    write_trench(store / "trench_b", break_tracklet=False)
+    write_trench(
+        store / "trench_b", break_tracklet=False, zarr_format=sf.zarr_format_of(geff)
+    )
     for trench in ("trench_a", "trench_b"):
         path = store / trench / "tracking_graph.geff"
         EditSession.create(
@@ -707,7 +752,9 @@ def test_attach_format_records_nothing_unless_every_dataset_matches(archive, tmp
 def test_release_commands_leave_datasets_without_history_alone(archive, tmp_path):
     geff, pristine = archive
     store = geff.parent.parent
-    write_trench(store / "trench_b", break_tracklet=False)  # never edited
+    write_trench(
+        store / "trench_b", break_tracklet=False, zarr_format=sf.zarr_format_of(geff)
+    )  # never edited
     untouched = files(store / "trench_b")
     tracks = load_geff_group(geff).tracks
     with EditSession.create(tracks, geff, source_format=None) as session:
@@ -744,14 +791,14 @@ def layout(group: Path) -> dict:
             str(p.relative_to(group)) for p in group.rglob("*") if is_metadata(p)
         )
     }
-    for p in sorted(geff.rglob(".zarray")):
-        if "edit_history" in p.parts:
-            continue
-        meta = json.loads(p.read_text())
-        out[str(p.relative_to(group))] = {
-            k: v for k, v in meta.items() if k not in ("shape", "chunks")
+    v2 = sf.zarr_format_of(geff) == 2
+    for d in sf._array_dirs(geff, 2 if v2 else 3):
+        meta = json.loads((d / (".zarray" if v2 else "zarr.json")).read_text())
+        sized = ("shape", "chunks") if v2 else ("shape", "chunk_grid")
+        out[str(d.relative_to(group))] = {
+            k: v for k, v in meta.items() if k not in sized
         }
-    root = json.loads((geff / ".zattrs").read_text())
+    root = root_meta(geff)
     for axis in root["geff"]["axes"]:
         axis.pop("min"), axis.pop("max")
     out["root"] = json.dumps(root)  # key order matters
@@ -778,15 +825,19 @@ def values(group: Path) -> dict:
 
 
 @pytest.fixture
-def mixed_store(tmp_path):
+def mixed_store(tmp_path, zarr_format):
     """An archive-layout trench (with a history) and two raw trenches, one with a
     history and an edit, one never edited; plus an archive-layout template."""
     store = tmp_path / "mixed.zarr"
-    write_trench(store / "trench_a", break_tracklet=False)
-    write_trench(store / "trench_b", break_tracklet=False, raw=True)
-    write_trench(store / "trench_c", break_tracklet=False, raw=True)
+    write_trench(store / "trench_a", break_tracklet=False, zarr_format=zarr_format)
+    write_trench(
+        store / "trench_b", break_tracklet=False, raw=True, zarr_format=zarr_format
+    )
+    write_trench(
+        store / "trench_c", break_tracklet=False, raw=True, zarr_format=zarr_format
+    )
     template = tmp_path / "template.zarr" / "trench_t"
-    write_trench(template, break_tracklet=False)
+    write_trench(template, break_tracklet=False, zarr_format=zarr_format)
     for trench in ("trench_a", "trench_b"):
         path = store / trench / "tracking_graph.geff"
         session, tracks = open_for_editing(path, tmp_path)

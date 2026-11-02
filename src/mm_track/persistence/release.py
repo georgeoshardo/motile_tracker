@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import shutil
 import sys
@@ -131,7 +130,7 @@ def conform_store(store, template_geff, *, drop_extra=False, remove=()):
         if problems:
             raise sf.PublicationRejected([f"{geff.parent.name}: {p}" for p in problems])
         image_json = None
-        attrs = json.loads(new["root_text"])["geff"]
+        attrs = sf.root_attrs(new)["geff"]
         for obj in attrs.get("related_objects") or []:
             target = (geff / obj.get("path", "")).resolve()
             if (
@@ -327,9 +326,7 @@ def export(store, out, *, drop_extra=False, report=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(
-        prog="python -m mm_track.persistence.release"
-    )
+    parser = argparse.ArgumentParser(prog="python -m mm_track.persistence.release")
     commands = parser.add_subparsers(dest="command", required=True)
     attach = commands.add_parser("attach-format")
     attach.add_argument("store", type=Path)

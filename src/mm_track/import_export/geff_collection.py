@@ -214,7 +214,9 @@ def read_related_arrays(
             )
             continue
         if related.type == "labels" and labels_path is None:
-            labels_path, label_prop = target, related.label_prop
+            # node_prop replaced label_prop in geff-spec 1.2.1; read either.
+            labels_path = target
+            label_prop = getattr(related, "node_prop", None) or related.label_prop
         elif related.type == "image" and image_path is None:
             image_path = target
     return RelatedArrays(
@@ -289,9 +291,7 @@ def load_geff_group(
             if session is None and has_history(geff_path):
                 from appdirs import AppDirs
 
-                session = open_session(
-                    geff_path, AppDirs("mm-track").user_data_dir
-                )
+                session = open_session(geff_path, AppDirs("mm-track").user_data_dir)
             if session is not None:
                 geff_path = session.path
                 # Recover root metadata before resolving its related image paths.
