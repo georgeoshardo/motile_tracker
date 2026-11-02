@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 # Smallest on-screen size of a kymograph marker, in screen pixels.
-MIN_SCREEN_SIZE = 30
+MIN_SCREEN_SIZE = 15
 
 
 class KymographTrackPoints(Points):
@@ -71,7 +71,7 @@ class KymographTrackPoints(Points):
         self.page_length = int(page_length)
         self.nodes: list[int] = []
         self.node_index_dict: dict[int, int] = {}
-        self.default_size = 5
+        self.default_size = 2.5
 
         super().__init__(
             data=np.zeros((0, 2), dtype=float),
@@ -192,7 +192,7 @@ class KymographTrackPoints(Points):
         than MIN_SCREEN_SIZE screen pixels.
 
         A kymograph page is thousands of pixels wide, so at the zoom that fits a page
-        5-pixel markers shrink to a dot. napari's ``canvas_size_limits`` would enlarge
+        small markers shrink to a dot. napari's ``canvas_size_limits`` would enlarge
         them on screen, but vispy then grows the white border instead of the symbol,
         so the size is set from the camera zoom instead.
         """
