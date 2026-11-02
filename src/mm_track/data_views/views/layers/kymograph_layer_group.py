@@ -49,6 +49,9 @@ class KymographLayerGroup:
         self.name = ""
 
         self.image_layer_name: str | None = None
+        # further image layers (for example other channels) drawn as kymographs over
+        # the background, each in its own colors with additive blending
+        self.overlay_image_layer_names: list[str] = []
         self.page_start = 0
         self.page_length = 1
         self.show_boundaries = True
@@ -60,6 +63,9 @@ class KymographLayerGroup:
         self.visible_nodes: list[int] | str = "all"
 
         self.background_layer: napari.layers.Image | None = None
+        self._background_source: napari.layers.Image | None = None
+        # overlay kymograph layers, keyed by the name of their source layer
+        self.overlay_layers: dict[str, napari.layers.Image] = {}
         # slider under the canvas, spanning its width, that pans the kymograph
         # along time one frame per step; created once, shown only in kymograph mode
         self.time_slider: KymographTimeSlider | None = None
@@ -99,6 +105,12 @@ class KymographLayerGroup:
                 self.geometry,
                 self.page_length,
             )
+        if self.active:
+            self._refresh()
+
+    def set_overlay_image_layer_names(self, layer_names: list[str]) -> None:
+        """Select the image layers drawn as kymographs over the background."""
+        self.overlay_image_layer_names = [name for name in layer_names if name]
         if self.active:
             self._refresh()
 
@@ -180,12 +192,16 @@ class KymographLayerGroup:
     def remove_napari_layers(self) -> None:
         self._hide_time_slider()
         self.remove_napari_layer(self.background_layer)
+        for layer in self.overlay_layers.values():
+            self.remove_napari_layer(layer)
         self.remove_napari_layer(self.continuation_links_layer)
         self.remove_napari_layer(self.branch_links_layer)
         self.remove_napari_layer(self.bounds_layer)
         self.remove_napari_layer(self.points_layer)
         self.remove_napari_layer(self.labels_layer)
         self.background_layer = None
+        self._background_source = None
+        self.overlay_layers = {}
         self.continuation_links_layer = None
         self.branch_links_layer = None
         self.bounds_layer = None
@@ -255,16 +271,48 @@ class KymographLayerGroup:
                 return False
         return True
 
-    def _page_image(self) -> np.ndarray | None:
-        image_layer = self._resolved_image_layer()
-        if image_layer is None:
-            return None
+    def _resolved_overlay_layers(self) -> list[napari.layers.Image]:
+        """The usable overlay source layers, in the order they were selected.
+
+        In kymograph mode the sources are detached from the viewer (with every other
+        time-series layer), so the tracks viewer's detached layers are searched too.
+        """
+        detached = [
+            layer
+            for layer, _, _ in getattr(
+                self.tracks_viewer, "_detached_kymograph_layers", []
+            )
+        ]
+        candidates = [*self._candidate_image_layers(), *detached]
+        background = self._resolved_image_layer()
+        layers: list[napari.layers.Image] = []
+        for name in self.overlay_image_layer_names:
+            for layer in candidates:
+                if (
+                    layer.name == name
+                    and layer is not background
+                    and layer not in layers
+                    and isinstance(layer, napari.layers.Image)
+                    and not layer.multiscale
+                    and self._is_usable_image_layer(layer)
+                ):
+                    layers.append(layer)
+                    break
+        return layers
+
+    def _page_image_of(self, image_layer: napari.layers.Image) -> np.ndarray:
         # only the frames of the current page are read from the (possibly lazy) data
         return concat_time_to_kymograph(
             image_layer.data,
             page_start=self.page_start,
             page_length=self.page_length,
         )
+
+    def _page_image(self) -> np.ndarray | None:
+        image_layer = self._resolved_image_layer()
+        if image_layer is None:
+            return None
+        return self._page_image_of(image_layer)
 
     def _page_nodes(self) -> list[int]:
         if self.tracks is None or self.geometry is None:
@@ -283,23 +331,66 @@ class KymographLayerGroup:
         ]
 
     def _refresh_background(self) -> None:
-        image = self._page_image()
-        if image is None:
+        source = self._resolved_image_layer()
+        if source is None:
             self.remove_napari_layer(self.background_layer)
             self.background_layer = None
-            return
-
-        if self.background_layer is None:
-            self.background_layer = self.viewer.add_image(
-                image,
-                name=f"{self.name}_kymograph_image",
-                scale=(self.geometry.y_scale, self.geometry.x_scale),
-                colormap="gray",
-                blending="opaque",
-            )
+            self._background_source = None
         else:
-            self.background_layer.data = image
-            self.background_layer.scale = (self.geometry.y_scale, self.geometry.x_scale)
+            image = self._page_image_of(source)
+            scale = (self.geometry.y_scale, self.geometry.x_scale)
+            if self.background_layer is None:
+                self.background_layer = self.viewer.add_image(
+                    image,
+                    name=f"{self.name}_kymograph_image",
+                    scale=scale,
+                    colormap=source.colormap,
+                    contrast_limits=source.contrast_limits,
+                    blending="opaque",
+                )
+            else:
+                self.background_layer.data = image
+                self.background_layer.scale = scale
+                if source is not self._background_source:
+                    # a different image: take over its colors once, so contrast
+                    # adjusted on the kymograph survives paging
+                    self.background_layer.colormap = source.colormap
+                    self.background_layer.contrast_limits = source.contrast_limits
+            self._background_source = source
+        self._refresh_overlays()
+
+    def _refresh_overlays(self) -> None:
+        """Draw each overlay image as a kymograph over the background."""
+        sources = self._resolved_overlay_layers()
+        wanted = {layer.name for layer in sources}
+        for name in list(self.overlay_layers):
+            if name not in wanted:
+                self.remove_napari_layer(self.overlay_layers.pop(name))
+        scale = (self.geometry.y_scale, self.geometry.x_scale)
+        for source in sources:
+            image = self._page_image_of(source)
+            layer = self.overlay_layers.get(source.name)
+            if layer is None:
+                below = [
+                    self.viewer.layers.index(existing)
+                    for existing in (self.background_layer, *self.overlay_layers.values())
+                    if existing is not None and existing in self.viewer.layers
+                ]
+                layer = self.viewer.add_image(
+                    image,
+                    name=f"{self.name}_kymograph_{source.name}",
+                    scale=scale,
+                    colormap=source.colormap,
+                    contrast_limits=source.contrast_limits,
+                    blending="additive",
+                )
+                self.overlay_layers[source.name] = layer
+                # keep the overlays with the background, under labels and points
+                if below and max(below) + 1 < self.viewer.layers.index(layer):
+                    self.viewer.layers.move(self.viewer.layers.index(layer), max(below) + 1)
+            else:
+                layer.data = image
+                layer.scale = scale
 
     def _refresh_labels(self) -> None:
         if (

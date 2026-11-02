@@ -2,7 +2,7 @@ import contextlib
 
 import napari
 from psygnal import Signal
-from qtpy.QtCore import QSignalBlocker
+from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -10,6 +10,8 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -242,6 +244,14 @@ class VisualizationWidget(QWidget):
         )
         self.image_layer_box.currentTextChanged.connect(self._update_image_layer)
 
+        self.overlay_list = QListWidget()
+        self.overlay_list.setToolTip(
+            "Image layers drawn as kymographs over the image layer, each in its own "
+            "colors (for example the other channels)."
+        )
+        self.overlay_list.setMaximumHeight(90)
+        self.overlay_list.itemChanged.connect(self._update_overlay_layers)
+
         self.page_start_box = QSpinBox()
         self.page_start_box.setMinimum(0)
         self.page_start_box.setToolTip("First frame shown on the current page")
@@ -281,6 +291,7 @@ class VisualizationWidget(QWidget):
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         form = QFormLayout(box)
         form.addRow("Image Layer", self.image_layer_box)
+        form.addRow("Overlay Layers", self.overlay_list)
         form.addRow("Page Start", self.page_start_box)
         form.addRow("Page Length", self.page_length_box)
 
@@ -363,6 +374,14 @@ class VisualizationWidget(QWidget):
             None if layer_name == "None" else layer_name
         )
 
+    def _update_overlay_layers(self, _item=None) -> None:
+        names = [
+            self.overlay_list.item(row).text()
+            for row in range(self.overlay_list.count())
+            if self.overlay_list.item(row).checkState() == Qt.Checked
+        ]
+        self.tracks_viewer.set_kymograph_overlay_layers(names)
+
     def _update_page_start(self, page_start: int) -> None:
         self.tracks_viewer.set_kymograph_page_start(page_start)
 
@@ -436,6 +455,20 @@ class VisualizationWidget(QWidget):
                 current_layer if current_layer in image_layers else "None"
             )
 
+        # In kymograph mode the image layers are detached from the viewer, so the
+        # list is only rebuilt in the spatial view (where it can be edited).
+        if self.tracks_viewer.view_mode != "kymograph":
+            overlays = set(kymograph_layers.overlay_image_layer_names)
+            with QSignalBlocker(self.overlay_list):
+                self.overlay_list.clear()
+                for name in image_layers[1:]:
+                    if name == kymograph_layers.image_layer_name:
+                        continue
+                    item = QListWidgetItem(name)
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked if name in overlays else Qt.Unchecked)
+                    self.overlay_list.addItem(item)
+
         geometry = kymograph_layers.geometry
         page_length = kymograph_layers.page_length
         if geometry is not None:
@@ -461,6 +494,9 @@ class VisualizationWidget(QWidget):
         self.kymograph_box.setEnabled(can_show_kymograph)
         # the image layer can only be changed while the spatial view is shown
         self.image_layer_box.setEnabled(
+            can_show_kymograph and self.tracks_viewer.view_mode != "kymograph"
+        )
+        self.overlay_list.setEnabled(
             can_show_kymograph and self.tracks_viewer.view_mode != "kymograph"
         )
 

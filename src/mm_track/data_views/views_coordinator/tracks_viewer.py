@@ -608,6 +608,12 @@ class TracksViewer:
         self.kymograph_layers.set_image_layer_name(layer_name)
         self.kymograph_updated.emit()
 
+    def set_kymograph_overlay_layers(self, layer_names: list[str]) -> None:
+        """Select the image layers drawn as kymographs over the background image
+        (for example the other channels), each in its own colors."""
+        self.kymograph_layers.set_overlay_image_layer_names(layer_names)
+        self.kymograph_updated.emit()
+
     def set_kymograph_page_length(self, page_length: int) -> None:
         """Set the number of frames shown side by side on one kymograph page."""
         self.kymograph_layers.set_page(page_length=page_length)
