@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import warnings
 from typing import TYPE_CHECKING
 
@@ -34,6 +33,10 @@ if TYPE_CHECKING:
     from napari.utils.events import Event
 
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+
+
+# Smallest on-screen size of a kymograph marker, in screen pixels.
+MIN_SCREEN_SIZE = 30
 
 
 class KymographTrackPoints(Points):
@@ -79,9 +82,6 @@ class KymographTrackPoints(Points):
             properties={"node_id": [], "track_id": []},
             border_color=[1, 1, 1, 1],
             blending="translucent_no_depth",
-            # A kymograph page is thousands of pixels wide, so at the zoom that fits
-            # a page the 5-pixel markers would shrink to a dot; keep them legible.
-            canvas_size_limits=(30, 10000),
         )
 
         # Key bindings (should be specified both on the viewer (in tracks_viewer)
@@ -107,6 +107,8 @@ class KymographTrackPoints(Points):
         )
         # listen to updates in the selection (in select mode)
         self.selected_data.events.items_changed.connect(self._update_selection)
+        # keep the markers legible when zoomed out (see _display_size)
+        self.tracks_viewer.viewer.camera.events.zoom.connect(self._on_zoom)
         self._refresh()
 
     @property
@@ -185,6 +187,35 @@ class KymographTrackPoints(Points):
         self.default_size = size
         self._refresh()
 
+    def _display_size(self) -> float:
+        """The marker size to draw, in data units: ``default_size``, but never less
+        than MIN_SCREEN_SIZE screen pixels.
+
+        A kymograph page is thousands of pixels wide, so at the zoom that fits a page
+        5-pixel markers shrink to a dot. napari's ``canvas_size_limits`` would enlarge
+        them on screen, but vispy then grows the white border instead of the symbol,
+        so the size is set from the camera zoom instead.
+        """
+        zoom = float(self.tracks_viewer.viewer.camera.zoom) or 1.0
+        return max(float(self.default_size), MIN_SCREEN_SIZE / zoom)
+
+    def _apply_sizes(self) -> None:
+        """Size every marker from _display_size, selected ones 30% larger."""
+        n_points = len(self.data)
+        if n_points == 0:
+            return
+        size = self._display_size()
+        sizes = np.full(n_points, size)
+        for node in self.tracks_viewer.selected_nodes:
+            index = self.node_index_dict.get(node, None)
+            if index is not None:
+                sizes[index] = size * 1.3
+        self.size = sizes
+
+    def _on_zoom(self, event=None) -> None:
+        if self in self.tracks_viewer.viewer.layers:
+            self._apply_sizes()
+
     def _page_nodes(self) -> list[int]:
         """The nodes whose time point falls on the current page."""
         tracks = self.tracks_viewer.tracks
@@ -244,7 +275,7 @@ class KymographTrackPoints(Points):
         self.symbol = self.get_symbols(tracks, self.tracks_viewer.symbolmap)
         self.face_color = self._map_track_colors(track_ids)
         self.properties = {"node_id": self.nodes, "track_id": track_ids}
-        self.size = self.default_size
+        self.size = self._display_size()
         self.border_color = [1, 1, 1, 1]
 
         self.events.data.connect(self._update_data)
@@ -436,14 +467,11 @@ class KymographTrackPoints(Points):
         # Set border color and size for the selected items. Both are built up first and
         # then assigned once, because every assignment emits an event.
         border_colors = np.tile([1.0, 1.0, 1.0, 1.0], (n_points, 1))
-        sizes = np.full(n_points, self.default_size)
-        selected_size = math.ceil(self.default_size + 0.3 * self.default_size)
         for node in self.tracks_viewer.selected_nodes:
             index = self.node_index_dict.get(node, None)
             if index is not None:
                 border_colors[index] = (0, 1, 1, 1)
-                sizes[index] = selected_size
 
-        self.size = sizes
+        self._apply_sizes()
         self.border_color = border_colors
         self.refresh()
