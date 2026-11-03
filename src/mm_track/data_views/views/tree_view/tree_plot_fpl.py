@@ -10,61 +10,29 @@ import pandas as pd
 import pygfx as gfx
 from psygnal import Signal
 from pygfx.utils.enums import MarkerInt
-from qtpy.QtCore import QPoint, Qt
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QCursor
 from qtpy.QtWidgets import QToolTip, QVBoxLayout, QWidget
 
-_SELECT_COLOR = np.array(
-    [0.0, 1.0, 1.0, 1.0], dtype=np.float32
-)  # cyan selection outline
+from mm_track.data_views.views.tree_view import tree_plot_shared as shared
+from mm_track.data_views.views.tree_view.tree_plot_shared import (
+    BASE_SIZE,
+    NODE_LABEL_MAX,
+    NODE_LABEL_MIN_SIZE,
+    RIGHT_CLICK_DRAG_PX,
+    SELECT_COLOR,
+    SELECT_EDGE_WIDTH,
+    SIZE_SCALE_EPS,
+    TOOLTIP_OFFSET,
+)
+
 _EDGE_NONE = np.array(
     [0.0, 0.0, 0.0, 0.0], dtype=np.float32
 )  # transparent (unselected)
-_SELECT_EDGE_WIDTH = (
-    2.0  # px outline around a selected node (fill keeps its track color)
-)
-_BASE_SIZE = 10.0  # bigger than the old 10 so nodes are easier to click and glyphs read
-_SELECT_BUMP = 6.0  # size increase for a selected node (scaled along with the markers)
-_SELECT_BUMP_MIN = 2.0  # ...but at least this, so a small node still reads as selected
-# Markers are drawn in screen pixels, so a fixed size looks wrong at both ends of the
-# zoom range: zoomed out, the lanes pack closer until parallel lineages merge into one
-# blob; zoomed in, a handful of nodes float in a mostly empty canvas. In tree mode both
-# grids are one unit apart (integer x_axis_pos, integer t), so scale the markers with
-# whichever of the two is tighter on screen: a glyph spans _MARKER_FILL of that gap,
-# clamped to [_MIN_SIZE, _MAX_SIZE]. Feature mode keeps a fixed size — its value axis is
-# continuous, so it has no grid to measure.
-_MIN_SIZE = 3.0  # never shrink past this: nodes must stay visible and clickable
-_MAX_SIZE = 100.0  # ...and never grow past this, however far you zoom in
-_MARKER_FILL = 0.9  # glyph diameter as a fraction of the grid spacing (<1 leaves a gap)
-_SIZE_SCALE_EPS = 0.02  # skip <2% changes so a slow zoom won't re-upload sizes a frame
-# Once a node is drawn big enough to hold text, write its node_id inside it. Only the
-# nodes currently on screen get a label, and only while there are few enough of them
-# that building the text blocks stays cheap.
-_NODE_LABEL_MIN_SIZE = 20.0  # node diameter (px) from which the id fits inside
-_NODE_LABEL_MAX = 400  # give up past this many on-screen nodes
 _NODE_LABEL_COLOR = (0.0, 0.0, 0.0, 1.0)  # black on the track-coloured fill
-# The font has to fit the *longest* id on screen inside a circle, so it is capped two
-# ways: by the dot's height, and by its width once the digits are counted (a five-digit
-# id in a dot sized for two would spill its first and last digit outside the circle).
-_NODE_LABEL_FONT_FRACTION = 0.5  # of the dot diameter, for a short label
-# digit ink width as a fraction of the font size, measured by rendering a string
-# offscreen and counting pixels (0.550 at both font 20 and font 40)
-_NODE_LABEL_DIGIT_WIDTH = 0.55
-# Track ids along the lane axis (optional, toggled from the Visualization tab). They
-# live in the same dock as the perpendicular ruler, which they replace when shown.
+# Track ids along the lane axis live in the same dock as the perpendicular ruler,
+# which they replace when shown.
 _DOCK_TRACK_ID_PX = 22.0  # dock margin needed for one row of track-id labels
-_TRACK_LABEL_MIN_PX = 30.0  # min spacing between labels; lanes in between are skipped
-_TRACK_LABEL_MAX = 200  # hard cap on label count, whatever the spacing works out to
-# Qt drops a tooltip a little below-right of the position it is given, which leaves it
-# floating away from the node. Pull it back up so it sits right next to the cursor,
-# still clear of the pointer itself.
-_TOOLTIP_OFFSET = QPoint(10, -22)
-# triangle (split) and cross (end) glyphs have less visual weight than a filled circle
-# at the same bounding-box size, so enlarge them to match and stay clickable/legible.
-_SYMBOL_SIZE_FACTOR = {"t1": 1.9, "x": 1.4}
-# a right-button press that moves <= this many pixels counts as a click (-> reset view);
-# a larger movement is a drag, which the pan/zoom controller uses to squeeze x/y.
-_RIGHT_CLICK_DRAG_PX = 4.0
 # node-type glyphs: track_df["symbol"] uses pyqtgraph names; map to pygfx per-vertex
 # marker codes. continue="o" (circle), split="t1" (triangle), end="x" (cross).
 _MARKER_CODES = {
@@ -148,12 +116,9 @@ class TreePlot(QWidget):
         )
         self._selected_rows: list[int] = []
         self._size_scale = 1.0  # zoom-dependent multiplier on _base_sizes
-        # per-row lookups for the hover tooltip, filled in _rebuild
-        self._row_track_ids = np.empty(0, dtype=np.int64)
-        self._row_lineage_ids = None  # None when the df has no parent_track_id column
-        self._row_times = np.empty(0, dtype=np.float32)
-        # lane (x_axis_pos) -> track id, for the optional track-id axis
-        self._lane_track_ids: dict[int, int] = {}
+        # per-row lookups for the hover tooltip and the lane -> track id map behind
+        # the optional track-id axis, filled in _rebuild
+        self._lookups = shared.empty_lookups()
         self.show_track_ids = False  # toggled from the Visualization tab
         self.show_hover_info = True  # ...as is the hover tooltip
 
@@ -333,8 +298,7 @@ class TreePlot(QWidget):
         self._node_ids = np.empty(0, dtype=np.int64)
         self._id_to_row = {}
         self._selected_rows = []
-        self._lane_track_ids = {}
-        self._row_lineage_ids = None
+        self._lookups = shared.empty_lookups()
         QToolTip.hideText()
         with contextlib.suppress(Exception):
             self._figure.close()
@@ -615,13 +579,10 @@ class TreePlot(QWidget):
     # track-id axis (optional row of labels along the lane axis)
     # ------------------------------------------------------------------ #
     def _update_track_labels(self, left, right, bottom, top) -> None:
-        """Lay one track id per visible lane in the perpendicular axis' dock, thinning
-        them out so neighbouring labels stay at least ``_TRACK_LABEL_MIN_PX`` apart.
-
-        Lanes are one unit apart, so the step is a lane count, and lanes that fall
-        between two labels are simply skipped rather than drawn on top of each other.
-        """
-        if not self._track_id_axis_shown() or not self._lane_track_ids:
+        """Lay one track id per visible lane in the perpendicular axis' dock, thinned
+        out so neighbouring labels don't overlap (see ``shared.labelled_lanes``)."""
+        lane_track_ids = self._lookups.lane_track_ids
+        if not self._track_id_axis_shown() or not lane_track_ids:
             self._track_labels.visible = False
             return
 
@@ -633,18 +594,8 @@ class TreePlot(QWidget):
         else:
             dock, low, high = self._dock_left, -top, -bottom
             span_px = dock.viewport.logical_size[1]
-        span = high - low
-        if span <= 0 or span_px < 1:
-            self._track_labels.visible = False
-            return
-
-        step = max(1, int(np.ceil(_TRACK_LABEL_MIN_PX / (span_px / span))))
-        lanes = [
-            lane
-            for lane in range(int(np.ceil(low)), int(np.floor(high)) + 1, step)
-            if lane in self._lane_track_ids
-        ]
-        if not lanes or len(lanes) > _TRACK_LABEL_MAX:
+        lanes = shared.labelled_lanes(low, high, span_px, lane_track_ids)
+        if not lanes:
             self._track_labels.visible = False
             return
 
@@ -658,7 +609,7 @@ class TreePlot(QWidget):
                 block.set_text("")
                 continue
             lane = lanes[i]
-            block.set_text(str(self._lane_track_ids[lane]))
+            block.set_text(str(lane_track_ids[lane]))
             if self.view_direction == "vertical":
                 block.set_position(lane, _DOCK_WORLD * 0.5)
             else:
@@ -680,7 +631,7 @@ class TreePlot(QWidget):
         big enough to hold the text and few enough of them are visible."""
         if self._closed or self._scatter is None:
             return
-        if _BASE_SIZE * self._size_scale < _NODE_LABEL_MIN_SIZE:
+        if BASE_SIZE * self._size_scale < NODE_LABEL_MIN_SIZE:
             self._node_labels.visible = False
             return
 
@@ -694,17 +645,14 @@ class TreePlot(QWidget):
             & (ys >= py - h / 2)
             & (ys <= py + h / 2)
         )[0]
-        if len(visible) == 0 or len(visible) > _NODE_LABEL_MAX:
+        if len(visible) == 0 or len(visible) > NODE_LABEL_MAX:
             self._node_labels.visible = False
             return
 
         labels = [str(int(self._node_ids[row])) for row in visible]
-        diameter = _BASE_SIZE * self._size_scale
-        widest_label = max(len(label) for label in labels)
         self._node_labels.visible = True
-        self._node_labels.font_size = min(
-            diameter * _NODE_LABEL_FONT_FRACTION,
-            diameter * _MARKER_FILL / (widest_label * _NODE_LABEL_DIGIT_WIDTH),
+        self._node_labels.font_size = shared.node_label_font_size(
+            BASE_SIZE * self._size_scale, labels
         )
         self._ensure_text_blocks(self._node_labels, len(visible))
         for i in range(self._node_labels.get_text_block_count()):
@@ -719,30 +667,10 @@ class TreePlot(QWidget):
     # ------------------------------------------------------------------ #
     # rendering
     # ------------------------------------------------------------------ #
-    def _axis_value_column(self) -> str:
-        return self.feature if self.plot_type == "feature" else "x_axis_pos"
-
     def _compute_positions(self, df: pd.DataFrame) -> np.ndarray:
-        """(N, 3) float32 positions. Vertical: (axis_value, -t). Horizontal swaps.
-
-        In horizontal view the perpendicular (y) axis is negated so tree lanes read
-        top-to-bottom like the old pyqtgraph tree. But for a numeric *feature* the
-        y-axis should increase upward (larger values higher), so feature positions are
-        NOT negated. Feature plots are always horizontal (see TreeWidget), so this only
-        affects the horizontal branch.
-        """
-        axis_col = self._axis_value_column()
-        a = df[axis_col].to_numpy(dtype=np.float32)
-        t = df["t"].to_numpy(dtype=np.float32)
-        n = len(df)
-        pos = np.zeros((n, 3), dtype=np.float32)
-        if self.view_direction == "vertical":
-            pos[:, 0] = a
-            pos[:, 1] = -t
-        else:  # horizontal: time along x, perpendicular axis along y
-            pos[:, 0] = t
-            pos[:, 1] = a if self.plot_type == "feature" else -a
-        return pos
+        return shared.node_positions(
+            df, self.view_direction, self.plot_type, self.feature
+        )
 
     def _rebuild(self) -> None:
         """Full rebuild of the scene from ``self.track_df``. Only called when the
@@ -759,21 +687,18 @@ class TreePlot(QWidget):
             self._node_ids = np.empty(0, dtype=np.int64)
             self._id_to_row = {}
             self._base_sizes = np.empty(0, dtype=np.float32)
-            self._lane_track_ids = {}
             # the per-row arrays describe the data that just went away; leaving
             # them in place makes _reset_view frame the camera on coordinates
             # that are no longer drawn
             self._positions = np.empty((0, 3), dtype=np.float32)
             self._base_colors = np.empty((0, 4), dtype=np.float32)
-            self._row_track_ids = np.empty(0, dtype=np.int64)
-            self._row_times = np.empty(0, dtype=np.float32)
-            self._row_lineage_ids = None
+            self._lookups = shared.empty_lookups()
             return
 
         self._node_ids = df["node_id"].to_numpy()
         self._id_to_row = {int(nid): i for i, nid in enumerate(self._node_ids)}
         self._positions = self._compute_positions(df)
-        self._build_track_lookups(df)
+        self._lookups = shared.track_lookups(df)
 
         # colors: track_df["color"] is per-row RGBA in 0-255 -> float 0-1
         colors = np.stack(df["color"].to_numpy()).astype(np.float32) / 255.0
@@ -795,11 +720,7 @@ class TreePlot(QWidget):
         # setting the material's marker_mode to "vertex" + a geometry "markers" int
         # buffer (pygfx's per-vertex marker path), so we avoid finn's 3-scatter split.
         symbols = df["symbol"].to_numpy()
-        # per-vertex sizes: enlarge triangle/cross glyphs so they read as big as the dots
-        factors = np.array(
-            [_SYMBOL_SIZE_FACTOR.get(s, 1.0) for s in symbols], dtype=np.float32
-        )
-        self._base_sizes = (_BASE_SIZE * factors).astype(np.float32)
+        self._base_sizes = shared.base_sizes(symbols)
         # keep the scale from the previous frame here: the camera has not been framed
         # for this data yet, so it would be measured against a stale view. It is
         # corrected right after (_reset_view, or the per-frame _update_marker_scale).
@@ -822,7 +743,7 @@ class TreePlot(QWidget):
         # edge_color_mode="vertex" + a geometry "edge_colors" buffer; edge_width is
         # uniform (pygfx has no per-vertex width), transparent nodes just show no edge.
         wo.material.edge_color_mode = "vertex"
-        wo.material.edge_width = _SELECT_EDGE_WIDTH
+        wo.material.edge_width = SELECT_EDGE_WIDTH
         edge_colors = np.zeros((len(self._node_ids), 4), dtype=np.float32)
         wo.geometry.edge_colors = gfx.Buffer(edge_colors)
         self._edge_colors = wo.geometry.edge_colors
@@ -832,54 +753,6 @@ class TreePlot(QWidget):
         # node-id labels are raw pygfx, so _subplot.clear() above dropped them
         self._subplot.scene.add(self._node_labels)
 
-    def _build_track_lookups(self, df: pd.DataFrame) -> None:
-        """Per-row track ids (and lineage ids, where derivable) for the hover tooltip,
-        plus the lane -> track id map behind the track-id axis.
-
-        A lineage id is the track id at the root of the lineage: follow parent_track_id
-        (0 means "no parent") up from each track. Deriving it here keeps the tree view
-        independent of funtracks' optional lineage feature.
-        """
-        self._row_track_ids = df["track_id"].to_numpy()
-        self._row_times = df["t"].to_numpy()
-        self._lane_track_ids = dict(
-            zip(
-                df["x_axis_pos"].to_numpy().astype(int),
-                self._row_track_ids.astype(int),
-                strict=True,
-            )
-        )
-
-        if "parent_track_id" not in df:
-            self._row_lineage_ids = None
-            return
-        parent_of = dict(
-            zip(
-                self._row_track_ids.astype(int),
-                df["parent_track_id"].to_numpy().astype(int),
-                strict=True,
-            )
-        )
-        roots: dict[int, int] = {}
-        for track_id in parent_of:
-            chain, current = set(), track_id
-            # `current not in chain` only guards against a cycle in malformed data,
-            # which would otherwise spin here forever
-            while (
-                current not in roots
-                and current not in chain
-                and parent_of.get(current, 0) != 0
-            ):
-                chain.add(current)
-                current = parent_of[current]
-            root = roots.get(current, current)
-            roots[current] = root
-            for seen in chain:
-                roots[seen] = root
-        self._row_lineage_ids = np.array(
-            [roots[int(tid)] for tid in self._row_track_ids], dtype=np.int64
-        )
-
     def _build_edges(self, df: pd.DataFrame, colors: np.ndarray):
         """Vectorized edge build for a single NaN-separated ``gfx.Line``.
 
@@ -888,17 +761,9 @@ class TreePlot(QWidget):
         independent segments), and colors matches. Returns ``(None, None)`` if
         there are no edges.
         """
-        n = len(df)
-        parent_ids = df["parent_id"].to_numpy()
-        # vectorized parent_id -> row index (NaN where the parent isn't present)
-        row_of = pd.Series(np.arange(n), index=self._node_ids)
-        parent_rows = row_of.reindex(parent_ids).to_numpy()
-        mask = (parent_ids != 0) & ~np.isnan(parent_rows)
-        if not mask.any():
+        par_rows, child_rows = shared.edge_rows(df, self._node_ids)
+        if not len(child_rows):
             return None, None
-
-        child_rows = np.nonzero(mask)[0]
-        par_rows = parent_rows[mask].astype(np.int64)
         e = len(child_rows)
 
         edge_pos = np.full((3 * e, 3), np.nan, dtype=np.float32)
@@ -916,18 +781,8 @@ class TreePlot(QWidget):
     # zoom-dependent marker size
     # ------------------------------------------------------------------ #
     def _compute_size_scale(self) -> float:
-        """Multiplier on ``_base_sizes`` at the current zoom, clamped to
-        ``[_MIN_SIZE, _MAX_SIZE]``. Tree mode only; feature mode returns 1.0, and a
-        transiently degenerate viewport/camera keeps the current scale.
-
-        The two axes are not symmetric. Lanes are what must not collide, so the lane
-        spacing alone decides how far the markers shrink — a track densely sampled in
-        time is *meant* to read as a continuous run of overlapping dots, and letting the
-        time spacing shrink things too would leave the markers permanently at the floor.
-        Growing is the other way round: a marker only grows past its base size once both
-        spacings can take it, so zooming x alone stretches the tree without inflating the
-        dots into their vertical neighbours.
-        """
+        """Multiplier on ``_base_sizes`` at the current zoom (``shared.marker_scale``);
+        a transiently degenerate viewport/camera keeps the current scale."""
         if self.plot_type == "feature":
             return 1.0
         with contextlib.suppress(Exception):
@@ -936,19 +791,14 @@ class TreePlot(QWidget):
             width, height = state["width"], state["height"]
             if viewport_size[0] < 1 or viewport_size[1] < 1 or not width or not height:
                 return self._size_scale
-            # one unit on each axis, in pixels; the flip decides which is which
-            x_px, y_px = viewport_size[0] / width, viewport_size[1] / height
-            lane_px = x_px if self.view_direction == "vertical" else y_px
-            # measure against the widest glyph in the plot, not the plain dot: the
-            # triangle/cross factors make those nearly twice as wide, and they are the
-            # ones that touch their neighbours first.
-            widest = (
-                float(self._base_sizes.max()) if len(self._base_sizes) else _BASE_SIZE
+            # one unit on each axis, in pixels
+            return shared.marker_scale(
+                self.plot_type,
+                self.view_direction,
+                viewport_size[0] / width,
+                viewport_size[1] / height,
+                self._base_sizes,
             )
-            shrink = lane_px * _MARKER_FILL / widest  # lane spacing rules the way down
-            grow = min(x_px, y_px) * _MARKER_FILL / widest  # both rule the way up
-            scale = min(shrink, max(grow, 1.0))
-            return float(np.clip(scale, _MIN_SIZE / _BASE_SIZE, _MAX_SIZE / widest))
         return self._size_scale
 
     def _update_marker_scale(self) -> None:
@@ -957,7 +807,7 @@ class TreePlot(QWidget):
             return
         scale = self._compute_size_scale()
         largest = max(scale, self._size_scale)
-        if abs(scale - self._size_scale) < _SIZE_SCALE_EPS * largest:
+        if abs(scale - self._size_scale) < SIZE_SCALE_EPS * largest:
             return
         self._size_scale = scale
         sizes = self._base_sizes * scale
@@ -966,9 +816,7 @@ class TreePlot(QWidget):
         self._scatter.sizes = sizes
 
     def _select_bump(self) -> float:
-        """Extra size for a selected node: shrinks with the markers, but never below
-        ``_SELECT_BUMP_MIN``, so the selection stays visible when zoomed out."""
-        return max(_SELECT_BUMP * self._size_scale, _SELECT_BUMP_MIN)
+        return shared.select_bump(self._size_scale)
 
     # ------------------------------------------------------------------ #
     # selection (surgical: only touch changed rows)
@@ -990,7 +838,7 @@ class TreePlot(QWidget):
         for node_id in selected_nodes:
             row = self._id_to_row.get(int(node_id))
             if row is not None:
-                self._set_edge_color(row, _SELECT_COLOR)
+                self._set_edge_color(row, SELECT_COLOR)
                 self._scatter.sizes[row] = (
                     self._base_sizes[row] * self._size_scale + bump
                 )
@@ -1062,7 +910,7 @@ class TreePlot(QWidget):
             self._rpress_xy = None
             x1, y1 = getattr(ev, "x", None), getattr(ev, "y", None)
             moved = abs(x1 - x0) + abs(y1 - y0) if None not in (x0, y0, x1, y1) else 0.0
-            if moved <= _RIGHT_CLICK_DRAG_PX:
+            if moved <= RIGHT_CLICK_DRAG_PX:
                 self._reset_view()
             return
 
@@ -1117,19 +965,15 @@ class TreePlot(QWidget):
         wide viewport edges. Framing from ``self._positions`` ignores everything else.
         maintain_aspect=False fills the wide canvas; request_draw is required because
         a camera change doesn't repaint on its own between interactions."""
-        if len(self._positions) == 0:
+        rect = shared.reset_rect(self._positions)
+        if rect is None:
             return
-        xs, ys = self._positions[:, 0], self._positions[:, 1]
-        xmin, xmax = float(np.min(xs)), float(np.max(xs))
-        ymin, ymax = float(np.min(ys)), float(np.max(ys))
-        px = (xmax - xmin) * 0.05 or 1.0
-        py = (ymax - ymin) * 0.05 or 1.0
         # the axis lives in a dock outside the plot area, so no gutter compensation
         # is needed here — fit the data to the full (already-inset) plot viewport.
         with contextlib.suppress(Exception):
             cam = self._subplot.camera
             cam.maintain_aspect = False
-            cam.show_rect(xmin - px, xmax + px, ymin - py, ymax + py, depth=1)
+            cam.show_rect(*rect, depth=1)
             # drop any in-flight pan/zoom momentum, else the PanZoomController's
             # per-frame tick() keeps driving the camera from its own cached target
             # and overrides show_rect (reset would appear stuck at the drag position).
@@ -1163,34 +1007,20 @@ class TreePlot(QWidget):
             QToolTip.hideText()
             return
         QToolTip.showText(
-            QCursor.pos() + _TOOLTIP_OFFSET, self._describe_node(int(idx)), self
+            QCursor.pos() + TOOLTIP_OFFSET, self._describe_node(int(idx)), self
         )
 
     def _on_hover_leave(self, ev) -> None:  # noqa: ARG002 (pygfx passes the event)
         QToolTip.hideText()
 
     def _describe_node(self, row: int) -> str:
-        """Tooltip text for one row: node, track, lineage (when derivable) and time."""
-        parts = [f"node {int(self._node_ids[row])}"]
-        if len(self._row_track_ids) > row:
-            parts.append(f"track {int(self._row_track_ids[row])}")
-        if self._row_lineage_ids is not None and len(self._row_lineage_ids) > row:
-            parts.append(f"lineage {int(self._row_lineage_ids[row])}")
-        if len(self._row_times) > row:
-            parts.append(f"t {int(self._row_times[row])}")
-        return "\n".join(parts)
+        return shared.describe_node(row, self._node_ids, self._lookups)
 
     def select_points_in_rect(self, x0, x1, y0, y1) -> None:
         """Box-select: emit all node ids whose positions fall in the rect."""
         if len(self._positions) == 0:
             return
-        xs, ys = self._positions[:, 0], self._positions[:, 1]
-        inside = (
-            (xs >= min(x0, x1))
-            & (xs <= max(x0, x1))
-            & (ys >= min(y0, y1))
-            & (ys <= max(y0, y1))
-        )
+        inside = shared.rows_in_rect(self._positions, x0, x1, y0, y1)
         picked = [int(nid) for nid in self._node_ids[inside]]
         if picked:
             self.nodes_selected.emit(picked, True)
@@ -1206,55 +1036,34 @@ class TreePlot(QWidget):
             return
         self._center_on_rows([row])
 
+    def _camera_view(self):
+        """The camera's (cx, cy, width, height)."""
+        state = self._subplot.camera.get_state()
+        return (
+            state["position"][0],
+            state["position"][1],
+            state["width"],
+            state["height"],
+        )
+
     def _rows_fit(self, rows: list[int]) -> bool:
         """Whether all the given rows are inside the current viewport. True (nothing to
         do) for an empty list, and if the camera can't be read."""
-        if not rows:
-            return True
-        pts = self._positions[rows]
         with contextlib.suppress(Exception):
-            state = self._subplot.camera.get_state()
-            x, y = state["position"][0], state["position"][1]
-            w, h = state["width"], state["height"]
-            return bool(
-                (x - w / 2) <= pts[:, 0].min()
-                and pts[:, 0].max() <= (x + w / 2)
-                and (y - h / 2) <= pts[:, 1].min()
-                and pts[:, 1].max() <= (y + h / 2)
-            )
+            return shared.rows_fit(self._positions, rows, self._camera_view())
         return True
 
     def _center_on_rows(self, rows: list[int]) -> None:
-        """Bring the given rows into view.
-
-        Keeps the current zoom if the rows already fit in the viewport; otherwise
-        zooms out *just enough* (per axis) to fit them, and never zooms in. Used for
-        single-node centering and for multi-node selection — e.g. the two endpoints of
-        a just-broken edge, which may now sit far apart: rather than pan to their
-        midpoint at the current zoom (leaving both off-screen), we widen the view so
-        both are visible.
-        """
-        if not rows or self._rows_fit(rows):
-            return
-        pts = self._positions[rows]
-        xmin, xmax = float(pts[:, 0].min()), float(pts[:, 0].max())
-        ymin, ymax = float(pts[:, 1].min()), float(pts[:, 1].max())
+        """Bring the given rows into view (``shared.view_fitting_rows``)."""
         with contextlib.suppress(Exception):
+            view = shared.view_fitting_rows(self._positions, rows, self._camera_view())
+            if view is None:
+                return
             cam = self._subplot.camera
             state = cam.get_state()
-            w, h = state["width"], state["height"]
-            # grow the view only if the rows don't fit (never shrink = never zoom in);
-            # dividing the span by 0.8 leaves a ~10% margin so nodes aren't flush to
-            # the edge. For a single row the span is 0, so the zoom is preserved and we
-            # simply pan to it.
             new = dict(state)
-            new["position"] = (
-                (xmin + xmax) / 2,
-                (ymin + ymax) / 2,
-                state["position"][2],
-            )
-            new["width"] = max(w, (xmax - xmin) / 0.8)
-            new["height"] = max(h, (ymax - ymin) / 0.8)
+            new["position"] = (view[0], view[1], state["position"][2])
+            new["width"], new["height"] = view[2], view[3]
             cam.set_state(new)
             # clear in-flight momentum so the controller doesn't override the change
             actions = getattr(self._subplot.controller, "_actions", None)
