@@ -14,7 +14,11 @@ from mm_track.application_menus.group_widget import GroupWidget
 from mm_track.application_menus.kymograph_data_widget import (
     KymographDataWidget,
 )
-from mm_track.application_menus.menu_manager import MenuManager
+from mm_track.application_menus.menu_manager import (
+    EDITING,
+    LINEAGE_VIEW,
+    MenuManager,
+)
 from mm_track.application_menus.track_list_widget import TrackListWidget
 from mm_track.application_menus.visualization_widget import (
     VisualizationWidget,
@@ -87,17 +91,22 @@ class StartupWidget(QWidget):
             self.menu_manager.initialize_menu({name: config})
 
         # make sure the 'Getting started' tab is the active foreground tab.
-        QTimer.singleShot(0, lambda: self._finalize_ui(active_tab))
+        QTimer.singleShot(0, lambda: self._finalize_ui(active_tab, list(widgets)))
 
         # Now safely remove the widget, since everything we need is docked
         QTimer.singleShot(0, self._remove_self)
 
-    def _finalize_ui(self, active_tab: str) -> None:
-        """Set the active foreground tab, and move tabbar to the top.
+    def _finalize_ui(self, active_tab: str, menu_names: list[str]) -> None:
+        """Set the active foreground tab, and move tabbar to the top. With both the
+        lineage tree and the editing menu, arrange the docks in the default layout
+        (see MenuManager.arrange_default_layout).
         Args:
             active_tab (str): name of the tab to be set to the foreground (active).
+            menu_names (list[str]): the menus this widget opened.
         """
         self.menu_manager.set_tabbar_location(location="North")
+        if {LINEAGE_VIEW, EDITING} <= set(menu_names):
+            self.menu_manager.arrange_default_layout(menu_names)
         self.menu_manager.set_foreground_tabs([active_tab])
 
     def _remove_self(self) -> None:

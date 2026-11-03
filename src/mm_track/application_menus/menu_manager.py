@@ -9,6 +9,12 @@ from qtpy.QtWidgets import QDockWidget, QScrollArea, QTabBar, QTabWidget, QWidge
 
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
+# the docks that arrange_default_layout places on their own
+LINEAGE_VIEW = "Lineage View"
+EDITING = "Editing && Selection"
+TREE_WIDTH = 480  # px, the lineage tree's column
+BOTTOM_HEIGHT = 200  # px, the strip with Editing & Selection and the other menus
+
 
 class MenuManager:
     """Initializes and manages the menu widgets, including show/hide functionality and
@@ -175,6 +181,61 @@ class MenuManager:
             tb.setExpanding(False)
             tb.setStyleSheet(style)
             tb.setElideMode(Qt.ElideNone)
+
+    def arrange_default_layout(self, menu_names: list[str]) -> None:
+        """Arrange the docks for curating mother-machine kymographs: the lineage tree
+        in a column of its own to the right of napari's layer controls and layer
+        list, and a strip along the bottom split down the middle, with a compact
+        Editing & Selection on the left and the other menus as tabs on the right.
+        The right side of the window is left to the canvas.
+
+        Args:
+            menu_names (list[str]): the menus to arrange, in tab order; menus that
+                are not docked are skipped.
+        """
+        qt_window = self.viewer.window._qt_window
+        docks = {dw.windowTitle(): dw for dw in qt_window.findChildren(QDockWidget)}
+        tree = docks.get(LINEAGE_VIEW)
+        editing = docks.get(EDITING)
+        others = [
+            docks[name]
+            for name in menu_names
+            if name in docks and name not in (LINEAGE_VIEW, EDITING)
+        ]
+        for dock in (tree, editing, *others):
+            if dock is not None:
+                qt_window.removeDockWidget(dock)
+
+        if tree is not None:
+            # Horizontal: beside the layer controls and list, not tabbed with them
+            qt_window.addDockWidget(Qt.LeftDockWidgetArea, tree, Qt.Horizontal)
+            tree.show()
+        if editing is not None:
+            qt_window.addDockWidget(Qt.BottomDockWidgetArea, editing)
+            self.menu_widgets[EDITING].widget().use_compact_layout()
+            editing.show()
+        if others:
+            first = others[0]
+            if editing is not None:
+                qt_window.splitDockWidget(editing, first, Qt.Horizontal)
+            else:
+                qt_window.addDockWidget(Qt.BottomDockWidgetArea, first)
+            for dock in others[1:]:
+                qt_window.tabifyDockWidget(first, dock)
+            for dock in others:
+                dock.show()
+        qt_window.setTabPosition(
+            Qt.DockWidgetArea.BottomDockWidgetArea, QTabWidget.TabPosition.North
+        )
+
+        if tree is not None:
+            qt_window.resizeDocks([tree], [TREE_WIDTH], Qt.Horizontal)
+        if editing is not None and others:
+            half = qt_window.width() // 2
+            qt_window.resizeDocks([editing, others[0]], [half, half], Qt.Horizontal)
+        bottom = editing or (others[0] if others else None)
+        if bottom is not None:
+            qt_window.resizeDocks([bottom], [BOTTOM_HEIGHT], Qt.Vertical)
 
     def _create_scroll_wrapper(self, widget: QWidget) -> QScrollArea:
         """Wrap a widget in a QScrollArea to make it scrollable."""

@@ -118,9 +118,9 @@ class TracksViewer:
         }
         self.mode = "all"
         self.view_mode = "spatial"
-        # the click and key help in the bottom-right text overlay (see
-        # set_show_overlay_text)
-        self.show_overlay_text = True
+        # the click and key help in the bottom-right text overlay, off until switched
+        # on with "Show help text" in the Visualization tab (see set_show_overlay_text)
+        self.show_overlay_text = False
         self.tracks: SolutionTracks | None = None
         self.visible: list | str = []
         self.tracking_layers = TracksLayerGroup(self.viewer, self.tracks, "", self)

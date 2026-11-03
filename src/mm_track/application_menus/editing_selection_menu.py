@@ -161,7 +161,8 @@ class EditingMenu(QWidget):
         box = QGroupBox("Editing")
         box_layout = QVBoxLayout()
 
-        self.label = QLabel(f"Current Track ID: {self.tracks_viewer.selected_track}")
+        self.label_prefix = "Current Track ID"
+        self.label = QLabel(f"{self.label_prefix}: {self.tracks_viewer.selected_track}")
         self.tracks_viewer.update_track_id.connect(self.update_track_id_color)
 
         self.new_track_btn = QPushButton("Start new")
@@ -251,7 +252,7 @@ class EditingMenu(QWidget):
         color = self.tracks_viewer.track_id_color
         r, g, b, a = [int(c * 255) if i < 3 else c for i, c in enumerate(color)]
         css_color = f"rgba({r}, {g}, {b}, {a})"
-        self.label.setText(f"Current Track ID: {self.tracks_viewer.selected_track}")
+        self.label.setText(f"{self.label_prefix}: {self.tracks_viewer.selected_track}")
         self.label.setStyleSheet(
             f"""
             color: white;
@@ -311,11 +312,80 @@ class EditingSelectionWidget(QWidget):
         super().__init__()
 
         self.tracks_viewer = TracksViewer.get_instance(viewer)
-        editing_widget = EditingMenu(viewer)
-        selection_widget = SelectionWidget(self.tracks_viewer)
+        self.editing_widget = EditingMenu(viewer)
+        self.selection_widget = SelectionWidget(self.tracks_viewer)
         selection_editing_layout = QVBoxLayout()
-        selection_editing_layout.addWidget(editing_widget)
-        selection_editing_layout.addWidget(selection_widget)
+        selection_editing_layout.addWidget(self.editing_widget)
+        selection_editing_layout.addWidget(self.selection_widget)
         selection_editing_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(selection_editing_layout)
         self.setMaximumHeight(650)
+
+    def use_compact_layout(self) -> None:
+        """Lay the buttons out in one short row of small groups (Track, Node, Edge,
+        Selection) with shorter labels, for a strip along the bottom of the window.
+
+        The buttons themselves are kept, so what they do, their shortcuts and when
+        they are enabled stay the same.
+        """
+        ed, se = self.editing_widget, self.selection_widget
+
+        def group(title: str, rows: list[list[QWidget]]) -> QGroupBox:
+            box = QGroupBox(title)
+            grid = QGridLayout(box)
+            grid.setContentsMargins(6, 4, 6, 4)
+            grid.setSpacing(4)
+            for r, row in enumerate(rows):
+                for c, widget in enumerate(row):
+                    grid.addWidget(widget, r, c)
+            return box
+
+        ed.label_prefix = "Track ID"
+        ed.label.setText(f"{ed.label_prefix}: {self.tracks_viewer.selected_track}")
+        ed.set_division_btn.setText("Division [Y]")
+        se.deselect_btn.setText("Deselect [Esc]")
+        se.reselect_btn.setText("Restore [E]")
+        se.invert_btn.setText("Invert")
+        se.select_previous_set_btn.setText("Prev set [P]")
+        se.select_next_set_btn.setText("Next set [N]")
+
+        track = QGroupBox("Track")
+        track_layout = QVBoxLayout(track)
+        track_layout.setContentsMargins(6, 4, 6, 4)
+        track_layout.setSpacing(4)
+        for widget in (ed.label, ed.new_track_btn, ed.undo_btn, ed.redo_btn):
+            track_layout.addWidget(widget)
+        node = group(
+            "Node",
+            [
+                [ed.delete_node_btn, ed.swap_nodes_btn],
+                [ed.split_node_btn, ed.merge_nodes_btn],
+            ],
+        )
+        edge = group(
+            "Edge",
+            [[ed.delete_edge_btn, ed.create_edge_btn], [ed.set_division_btn]],
+        )
+        arrows = QWidget()
+        arrow_layout = QHBoxLayout(arrows)
+        arrow_layout.setContentsMargins(0, 0, 0, 0)
+        arrow_layout.addWidget(se.jump_to_previous_btn)
+        arrow_layout.addWidget(se.jump_to_next_btn)
+        selection = group(
+            "Selection",
+            [
+                [se.deselect_btn, se.reselect_btn, se.invert_btn],
+                [se.select_previous_set_btn, se.select_next_set_btn, arrows],
+            ],
+        )
+
+        # the tall layout's (now empty) boxes go; the widgets keep their logic
+        ed.hide()
+        se.hide()
+        strip = QWidget()
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(4, 2, 4, 2)
+        for box, stretch in ((track, 1), (node, 1), (edge, 1), (selection, 2)):
+            row.addWidget(box, stretch)
+        self.layout().addWidget(strip)
+        self.layout().addStretch(1)
