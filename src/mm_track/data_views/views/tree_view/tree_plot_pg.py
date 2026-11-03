@@ -14,7 +14,13 @@ import pyqtgraph as pg
 from psygnal import Signal
 from qtpy.QtCore import QLineF, QRectF, Qt
 from qtpy.QtGui import QColor, QCursor, QFont
-from qtpy.QtWidgets import QGraphicsRectItem, QToolTip, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+)
 
 from mm_track.data_views.views.tree_view import tree_plot_shared as shared
 from mm_track.data_views.views.tree_view.tree_plot_shared import (
@@ -33,6 +39,17 @@ _NODE_LABEL_COLOR = (0, 0, 0)  # black on the track-coloured fill
 _RUBBER_COLOR = (255, 255, 0)  # yellow box-select rectangle
 _SELECT_PEN = pg.mkPen(QColor.fromRgbF(*SELECT_COLOR), width=SELECT_EDGE_WIDTH)
 _NO_PEN = pg.mkPen(None)
+
+
+def _qcolor(rgba: tuple[float, ...]) -> QColor:
+    return QColor(*(int(round(c * 255)) for c in rgba))
+
+
+def _cosmetic_pen(rgba: tuple[float, ...], width: float):
+    """A pen whose width is in screen pixels, whatever the zoom."""
+    pen = pg.mkPen(_qcolor(rgba), width=width)
+    pen.setCosmetic(True)
+    return pen
 
 
 class _EdgesItem(pg.GraphicsObject):
@@ -227,6 +244,18 @@ class TreePlot(QWidget):
         self._scatter.sigHovered.connect(self._on_hover)
         self._view.addItem(self._edges)
         self._view.addItem(self._scatter)
+        # the kymograph's place: frames on screen, and the frame under the cursor
+        self._time_marks: tuple = (None, None)
+        self._view_band = QGraphicsRectItem()
+        self._view_band.setBrush(pg.mkBrush(_qcolor(shared.VIEW_BAND_FILL)))
+        self._view_band.setPen(_cosmetic_pen(shared.VIEW_BAND_EDGE, 1.0))
+        self._view_band.setZValue(-10)
+        self._hover_line = QGraphicsLineItem()
+        self._hover_line.setPen(_cosmetic_pen(shared.HOVER_LINE_COLOR, 1.0))
+        self._hover_line.setZValue(-5)
+        for item in (self._view_band, self._hover_line):
+            item.setVisible(False)
+            self._view.addItem(item, ignoreBounds=True)
         self._node_labels: list[pg.TextItem] = []
 
         self._view.sigRangeChanged.connect(self._on_view_changed)
@@ -315,6 +344,27 @@ class TreePlot(QWidget):
             self._reset_view()
         self._update_marker_scale()
 
+    def set_time_marks(
+        self, frames: tuple[float, float] | None, hover: int | None
+    ) -> None:
+        """Show the kymograph's place: a band over the frames it shows and a line at
+        the frame under its cursor (see ``tree_plot_shared.time_marks``)."""
+        self._time_marks = (frames, hover)
+        self._draw_time_marks()
+
+    def _draw_time_marks(self) -> None:
+        band, line = shared.time_marks(
+            self._positions, self.view_direction, *self._time_marks
+        )
+        if band is not None:
+            x0, y0, x1, y1 = band
+            self._view_band.setRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+        self._view_band.setVisible(band is not None)
+        if line is not None:
+            (xa, ya), (xb, yb) = line
+            self._hover_line.setLine(float(xa), float(ya), float(xb), float(yb))
+        self._hover_line.setVisible(line is not None)
+
     def set_view(
         self,
         view_direction: str,
@@ -396,6 +446,7 @@ class TreePlot(QWidget):
             self._scatter.clear()
             self._edges.set_edges(np.empty((0, 2)), np.empty((0, 2)), np.empty((0, 4)))
             self._update_node_labels()
+            self._draw_time_marks()
             return
 
         self._node_ids = df["node_id"].to_numpy()
@@ -430,6 +481,7 @@ class TreePlot(QWidget):
             data=np.arange(len(self._node_ids)),
         )
         self._update_node_labels()
+        self._draw_time_marks()
 
     # ------------------------------------------------------------------ #
     # zoom-dependent marker size and node-id labels

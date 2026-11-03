@@ -230,3 +230,28 @@ def test_hover_describes_the_node():
     df = lineage_df()
     text = shared.describe_node(4, df["node_id"].to_numpy(), shared.track_lookups(df))
     assert text == "node 5\ntrack 2\nlineage 1\nt 4"
+
+
+def test_time_marks_geometry():
+    positions = np.array([[0, 0, 0], [5, -3, 0]], dtype=np.float32)  # (t, -lane)
+    band, line = shared.time_marks(positions, "horizontal", (1.5, 3.5), 2)
+    assert band == (1.5, -4.0, 3.5, 1.0)
+    assert line.tolist() == [[2.0, -4.0], [2.0, 1.0]]
+    vertical = np.array([[0, 0, 0], [3, -5, 0]], dtype=np.float32)  # (lane, -t)
+    band, line = shared.time_marks(vertical, "vertical", (1.5, 3.5), None)
+    assert band == (-1.0, -3.5, 4.0, -1.5)
+    assert line is None
+    assert shared.time_marks(np.empty((0, 3)), "horizontal", (1, 2), 1) == (None, None)
+
+
+def test_time_marks_are_drawn_and_kept_through_a_rebuild(plot):
+    plot.update(lineage_df(), "horizontal", "tree", None, [])
+    plot.set_time_marks((0.5, 2.5), 1)
+    assert plot._view_band.isVisible()
+    assert plot._hover_line.isVisible()
+    assert plot._view_band.rect().left() == pytest.approx(0.5)
+    plot.update(lineage_df(), "horizontal", "tree", None, [])
+    assert plot._view_band.isVisible()
+    plot.set_time_marks(None, None)
+    assert not plot._view_band.isVisible()
+    assert not plot._hover_line.isVisible()

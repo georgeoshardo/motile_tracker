@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 import napari
 import numpy as np
 from napari.utils.notifications import show_info
+from psygnal import Signal
+from qtpy.QtCore import QEvent, QObject
 
 from mm_track.data_views.views.kymograph_time_slider import (
     KymographTimeSlider,
@@ -37,7 +39,24 @@ if TYPE_CHECKING:
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
+class _LeaveFilter(QObject):
+    """Calls ``on_leave`` when the mouse leaves the widget it is installed on."""
+
+    def __init__(self, on_leave) -> None:
+        super().__init__()
+        self._on_leave = on_leave
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt name)
+        if event.type() == QEvent.Leave:
+            self._on_leave()
+        return False
+
+
 class KymographLayerGroup:
+    # The frames on screen or the frame under the cursor changed (visible_frames,
+    # hover_frame); the lineage tree draws both.
+    view_changed = Signal()
+
     def __init__(
         self,
         viewer: napari.Viewer,
@@ -72,6 +91,9 @@ class KymographLayerGroup:
         self._time_slider_dock = None  # only used when the canvas layout is not found
         self._time_events_connected = False
         self._syncing_time = False
+        # the frame under the cursor on the kymograph, None when it is elsewhere
+        self.hover_frame: int | None = None
+        self._leave_filter = _LeaveFilter(self._on_cursor_left)
         self.labels_layer: KymographTrackLabels | None = None
         self.points_layer: KymographTrackPoints | None = None
         self.continuation_links_layer: KymographTrackLinks | None = None
@@ -184,6 +206,8 @@ class KymographLayerGroup:
     def deactivate(self) -> None:
         self.active = False
         self.remove_napari_layers()
+        self.hover_frame = None
+        self.view_changed.emit()
 
     def remove_napari_layer(self, layer: napari.layers.Layer | None) -> None:
         if layer is not None and layer in self.viewer.layers:
@@ -373,7 +397,10 @@ class KymographLayerGroup:
             if layer is None:
                 below = [
                     self.viewer.layers.index(existing)
-                    for existing in (self.background_layer, *self.overlay_layers.values())
+                    for existing in (
+                        self.background_layer,
+                        *self.overlay_layers.values(),
+                    )
                     if existing is not None and existing in self.viewer.layers
                 ]
                 layer = self.viewer.add_image(
@@ -387,7 +414,9 @@ class KymographLayerGroup:
                 self.overlay_layers[source.name] = layer
                 # keep the overlays with the background, under labels and points
                 if below and max(below) + 1 < self.viewer.layers.index(layer):
-                    self.viewer.layers.move(self.viewer.layers.index(layer), max(below) + 1)
+                    self.viewer.layers.move(
+                        self.viewer.layers.index(layer), max(below) + 1
+                    )
             else:
                 layer.data = image
                 layer.scale = scale
@@ -554,6 +583,7 @@ class KymographLayerGroup:
         if self.viewer.dims.ndim == 2:
             self.viewer.dims.axis_labels = ("y", "x(time)")
         self._sync_time_slider_from_camera()
+        self.view_changed.emit()
 
     def _ensure_interactive_selection(self) -> None:
         interactive_layers = [
@@ -653,13 +683,78 @@ class KymographLayerGroup:
         if self._time_events_connected:
             return
         self.viewer.camera.events.center.connect(self._on_camera_center)
+        self.viewer.camera.events.zoom.connect(self._on_camera_zoom)
+        self.viewer.cursor.events.position.connect(self._on_cursor_moved)
+        canvas = self._canvas_widget()
+        if canvas is not None:
+            canvas.installEventFilter(self._leave_filter)
         self._time_events_connected = True
 
     def _disconnect_time_events(self) -> None:
         if not self._time_events_connected:
             return
         self.viewer.camera.events.center.disconnect(self._on_camera_center)
+        self.viewer.camera.events.zoom.disconnect(self._on_camera_zoom)
+        self.viewer.cursor.events.position.disconnect(self._on_cursor_moved)
+        canvas = self._canvas_widget()
+        if canvas is not None:
+            canvas.removeEventFilter(self._leave_filter)
         self._time_events_connected = False
+
+    def _canvas_widget(self):
+        try:
+            return self.viewer.window._qt_viewer.canvas.native
+        except AttributeError:  # a viewer without a window
+            return None
+
+    def visible_frames(self) -> tuple[float, float] | None:
+        """The stretch of time on screen, in frames, from the canvas' left edge to
+        its right edge and limited to the frames on the page; frame t spans
+        t - 0.5 .. t + 0.5. None outside the kymograph view."""
+        geometry = self.geometry
+        zoom = float(self.viewer.camera.zoom)
+        if not self.active or geometry is None or zoom <= 0:
+            return None
+        canvas_width = float(getattr(self.viewer, "_canvas_size", (600, 800))[1])
+        half_width = canvas_width / zoom / 2.0
+        x_center = float(self.viewer.camera.center[-1])
+
+        def frame_at(x: float) -> float:
+            # pixel edges sit at half-steps, frames are x_size pixels wide
+            return self.page_start + (x / geometry.x_scale + 0.5) / geometry.x_size
+
+        start, stop = visible_frame_range(geometry, self.page_start, self.page_length)
+        low = max(frame_at(x_center - half_width), start) - 0.5
+        high = min(frame_at(x_center + half_width), stop) - 0.5
+        return (low, high) if high > low else None
+
+    def _frame_under_cursor(self) -> int | None:
+        geometry = self.geometry
+        if not self.active or geometry is None:
+            return None
+        y, x = (float(v) for v in self.viewer.cursor.position[-2:])
+        row = y / geometry.y_scale + 0.5
+        column = x / geometry.x_scale + 0.5
+        if not 0 <= row < geometry.y_size or column < 0:
+            return None
+        timepoint = self.page_start + int(column // geometry.x_size)
+        start, stop = visible_frame_range(geometry, self.page_start, self.page_length)
+        return timepoint if start <= timepoint < stop else None
+
+    def _set_hover_frame(self, frame: int | None) -> None:
+        if frame != self.hover_frame:
+            self.hover_frame = frame
+            self.view_changed.emit()
+
+    def _on_cursor_moved(self, event=None) -> None:
+        self._set_hover_frame(self._frame_under_cursor())
+
+    def _on_cursor_left(self) -> None:
+        self._set_hover_frame(None)
+
+    def _on_camera_zoom(self, event=None) -> None:
+        if self.active:
+            self.view_changed.emit()
 
     @property
     def current_timepoint(self) -> int | None:
@@ -669,7 +764,10 @@ class KymographLayerGroup:
         return self.time_slider.value()
 
     def _on_camera_center(self, event=None) -> None:
-        if not self.active or self._syncing_time or self.geometry is None:
+        if not self.active or self.geometry is None:
+            return
+        self.view_changed.emit()
+        if self._syncing_time:
             return
         self._sync_time_slider_from_camera()
 

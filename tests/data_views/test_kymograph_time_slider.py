@@ -296,3 +296,39 @@ def test_frame_centres_follow_pixel_centres(viewer, kymograph):
     center[-1] = 2 * width - 0.4  # first pixel column of frame 2
     viewer.camera.center = tuple(center)
     assert layers.current_timepoint == 2
+
+
+def test_view_changes_report_the_frames_on_screen(viewer, kymograph):
+    layers = kymograph.kymograph_layers
+    reports = []
+    layers.view_changed.connect(lambda: reports.append(layers.visible_frames()))
+    frame_width = layers.geometry.frame_world_width
+    center = list(viewer.camera.center)
+    center[-1] = 2.5 * frame_width - layers.geometry.x_scale / 2  # middle of frame 2
+    viewer.camera.center = tuple(center)
+    viewer.camera.zoom = viewer._canvas_size[1] / frame_width  # one frame across
+
+    low, high = reports[-1]
+    assert low == pytest.approx(1.5)
+    assert high == pytest.approx(2.5)
+
+
+def test_hover_frame_follows_the_cursor(viewer, kymograph):
+    layers = kymograph.kymograph_layers
+    geometry = layers.geometry
+    y = geometry.y_size * geometry.y_scale / 2
+    viewer.cursor.position = (y, layers._frame_center_x(3))
+    assert layers.hover_frame == 3
+    viewer.cursor.position = (-50.0, layers._frame_center_x(3))  # above the frames
+    assert layers.hover_frame is None
+    viewer.cursor.position = (y, layers._frame_center_x(1))
+    layers._on_cursor_left()
+    assert layers.hover_frame is None
+
+
+def test_leaving_kymograph_mode_clears_the_frames(viewer, kymograph):
+    layers = kymograph.kymograph_layers
+    assert layers.visible_frames() is not None
+    kymograph.set_view_mode("spatial")
+    assert layers.visible_frames() is None
+    assert layers.hover_frame is None

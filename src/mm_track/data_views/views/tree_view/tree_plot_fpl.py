@@ -72,6 +72,12 @@ _TICK_LABEL_MARGIN_PX = 14.0  # ruler's own tick-to-label gap (10) + room to the
 _DOCK_RESIZE_EPS_PX = 2.0  # a resize relayouts the whole figure; ignore smaller changes
 
 
+def _blend_alpha(alpha: float) -> float:
+    """The alpha that makes white over black look as bright as ``alpha`` does in
+    Qt: pygfx blends in linear light, so the result is shown brighter."""
+    return ((alpha + 0.055) / 1.055) ** 2.4
+
+
 def _flag_canvas_closed(canvas_ref: weakref.ref) -> None:
     """Mark a rendercanvas canvas as closed once its C++ widget is gone."""
     canvas = canvas_ref()
@@ -125,6 +131,11 @@ class TreePlot(QWidget):
         # shift-drag rectangle (box-select) state
         self._drag_start: tuple[float, float] | None = None
         self._rubber = None
+        # the kymograph's place: frames on screen, and the frame under the cursor
+        self._time_marks: tuple = (None, None)
+        self._band_fill = None  # made on first use, and again after each rebuild
+        self._band_edge = None
+        self._hover_line = None
         # right-button press position (screen px), to tell a click (reset) from a
         # drag (axis squeeze/zoom, handled natively by the pan/zoom controller)
         self._rpress_xy: tuple | None = None
@@ -680,6 +691,7 @@ class TreePlot(QWidget):
         self._edges = None
         self._edge_colors = None
         self._rubber = None  # cleared with the scene; recreated lazily on next drag
+        self._band_fill = self._band_edge = self._hover_line = None  # ...as are these
         self._selected_rows = []
 
         df = self.track_df
@@ -693,6 +705,7 @@ class TreePlot(QWidget):
             self._positions = np.empty((0, 3), dtype=np.float32)
             self._base_colors = np.empty((0, 4), dtype=np.float32)
             self._lookups = shared.empty_lookups()
+            self._draw_time_marks()
             return
 
         self._node_ids = df["node_id"].to_numpy()
@@ -752,6 +765,7 @@ class TreePlot(QWidget):
         self._scatter.add_event_handler(self._on_hover_leave, "pointer_leave")
         # node-id labels are raw pygfx, so _subplot.clear() above dropped them
         self._subplot.scene.add(self._node_labels)
+        self._draw_time_marks()
 
     def _build_edges(self, df: pd.DataFrame, colors: np.ndarray):
         """Vectorized edge build for a single NaN-separated ``gfx.Line``.
@@ -927,6 +941,71 @@ class TreePlot(QWidget):
         # ignore a plain shift-click (no drag) — that's handled as node append
         if abs(x1 - x0) > 1e-9 or abs(y1 - y0) > 1e-9:
             self.select_points_in_rect(x0, x1, y0, y1)
+
+    def set_time_marks(
+        self, frames: tuple[float, float] | None, hover: int | None
+    ) -> None:
+        """Show the kymograph's place: a band over the frames it shows and a line at
+        the frame under its cursor (see ``tree_plot_shared.time_marks``)."""
+        self._time_marks = (frames, hover)
+        if not self._closed:
+            self._draw_time_marks()
+
+    def _ensure_time_marks(self) -> None:
+        if self._band_fill is not None:
+            return
+        # under the edges and nodes, and never picked: clicks go to the nodes
+        self._band_fill = gfx.Mesh(
+            gfx.plane_geometry(1, 1),
+            gfx.MeshBasicMaterial(
+                color=(
+                    *shared.VIEW_BAND_FILL[:3],
+                    _blend_alpha(shared.VIEW_BAND_FILL[3]),
+                ),
+                alpha_mode="blend",
+                pick_write=False,
+            ),
+        )
+        self._band_fill.render_order = -3
+        self._subplot.scene.add(self._band_fill)
+        self._band_edge = self._subplot.add_line(
+            np.zeros((5, 3), dtype=np.float32),
+            colors=shared.VIEW_BAND_EDGE,
+            thickness=1.0,
+            name="_view_band",
+        )
+        self._hover_line = self._subplot.add_line(
+            np.zeros((2, 3), dtype=np.float32),
+            colors=shared.HOVER_LINE_COLOR,
+            thickness=1.0,
+            name="_hover_line",
+        )
+        for graphic, order in ((self._band_edge, -2), (self._hover_line, -1)):
+            graphic.world_object.render_order = order
+            graphic.world_object.material.pick_write = False
+
+    def _draw_time_marks(self) -> None:
+        band, line = shared.time_marks(
+            self._positions, self.view_direction, *self._time_marks
+        )
+        if band is None and line is None and self._band_fill is None:
+            return
+        self._ensure_time_marks()
+        if band is not None:
+            x0, y0, x1, y1 = band
+            self._band_fill.local.position = ((x0 + x1) / 2, (y0 + y1) / 2, 0)
+            self._band_fill.local.scale = (x1 - x0, y1 - y0, 1)
+            self._band_edge.data[:] = np.array(
+                [[x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0], [x0, y0, 0]],
+                dtype=np.float32,
+            )
+        self._band_fill.visible = self._band_edge.visible = band is not None
+        if line is not None:
+            self._hover_line.data[:] = np.column_stack(
+                [line, np.zeros(2, dtype=np.float32)]
+            )
+        self._hover_line.visible = line is not None
+        self._figure.canvas.request_draw()
 
     def _ensure_rubber(self):
         if self._rubber is None:

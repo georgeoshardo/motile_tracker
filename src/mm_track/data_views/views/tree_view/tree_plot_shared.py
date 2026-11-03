@@ -56,6 +56,52 @@ SELECT_COLOR = np.array([0.0, 1.0, 1.0, 1.0], dtype=np.float32)  # cyan outline
 SELECT_EDGE_WIDTH = 2.0  # px outline around a selected node (fill keeps its color)
 
 
+# Where the kymograph is, drawn over the tree as in the track viewer: a band over the
+# frames on screen in the kymograph, grey-outlined, and a line at the frame under
+# the cursor there. RGBA, 0-1.
+VIEW_BAND_FILL = (1.0, 1.0, 1.0, 0.12)  # as it should look over black
+VIEW_BAND_EDGE = (0.63, 0.63, 0.63, 0.8)
+HOVER_LINE_COLOR = (0.0, 0.75, 0.86, 0.9)
+
+
+def time_marks(
+    positions: np.ndarray,
+    view_direction: str,
+    frames: tuple[float, float] | None,
+    hover: int | None,
+) -> tuple[tuple[float, float, float, float] | None, np.ndarray | None]:
+    """Where to draw the kymograph's place on the tree.
+
+    Args:
+        positions: the plotted node positions (see ``node_positions``); the band and
+            line span the lanes these cover, plus one lane either side.
+        view_direction: "horizontal" (time along x) or "vertical" (time down y).
+        frames: the stretch of time shown in the kymograph, in frames (frame t
+            spans t - 0.5 .. t + 0.5), or None.
+        hover: the frame under the cursor in the kymograph, or None.
+
+    Returns:
+        The band as (x0, y0, x1, y1) and the line as a (2, 2) array of end points,
+        each None when there is nothing to draw.
+    """
+    if len(positions) == 0:
+        return None, None
+    vertical = view_direction == "vertical"
+    lanes = positions[:, 0] if vertical else positions[:, 1]
+    low, high = float(lanes.min()) - 1.0, float(lanes.max()) + 1.0
+
+    band = None
+    if frames is not None:
+        start, stop = frames
+        band = (low, -stop, high, -start) if vertical else (start, low, stop, high)
+    line = None
+    if hover is not None:
+        t = float(hover)
+        ends = [[low, -t], [high, -t]] if vertical else [[t, low], [t, high]]
+        line = np.array(ends, dtype=np.float32)
+    return band, line
+
+
 def node_positions(
     df: pd.DataFrame, view_direction: str, plot_type: str, feature: str | None
 ) -> np.ndarray:

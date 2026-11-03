@@ -89,6 +89,10 @@ class TreeWidget(QWidget):
         self.tree_widget.jump_to_node.connect(self.tracks_viewer.center_on_node)
         self.tree_widget.nodes_selected.connect(self.selected_nodes.add_list)
         self.tracks_viewer.center_node.connect(self.tree_widget.center_on_node)
+        # the kymograph's place (frames on screen, frame under the cursor) on the tree
+        self.tracks_viewer.kymograph_layers.view_changed.connect(
+            self._update_time_marks
+        )
 
         # Add radiobuttons for switching between different display modes
         self.mode_widget = TreeViewModeWidget()
@@ -183,10 +187,17 @@ class TreeWidget(QWidget):
             (self.tracks_viewer.node_selection_updated, self._update_selected),
             (self.tracks_viewer.tracks_updated, self._update_track_data),
             (self.tracks_viewer.center_node, self.tree_widget.center_on_node),
+            (self.tracks_viewer.kymograph_layers.view_changed, self._update_time_marks),
         ):
             with contextlib.suppress(ValueError, KeyError, RuntimeError):
                 signal.disconnect(slot)
         self.tree_widget.close_figure()
+
+    def _update_time_marks(self) -> None:
+        kymograph = self.tracks_viewer.kymograph_layers
+        self.tree_widget.set_time_marks(
+            kymograph.visible_frames(), kymograph.hover_frame
+        )
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Trigger clean up when napari's main window is being destroyed"""
