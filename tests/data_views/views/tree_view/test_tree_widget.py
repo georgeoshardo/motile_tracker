@@ -5,6 +5,7 @@ mode switching, and integration with TracksViewer.
 """
 
 import gc
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -17,6 +18,13 @@ from mm_track.data_views.views.tree_view.navigation_widget import (
 )
 from mm_track.data_views.views.tree_view.tree_widget import TreeWidget
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+
+# tests that look inside the fastplotlib canvas (its camera, figure and handlers);
+# the pyqtgraph one has its own (test_tree_plot_pg.py)
+fastplotlib_only = pytest.mark.skipif(
+    os.environ.get("MM_TRACK_TREE_BACKEND") == "pyqtgraph",
+    reason="looks inside the fastplotlib canvas",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +70,7 @@ def test_tree_plot_initialization_and_update(viewer, solution_tracks_2d):
     assert tree_widget.tree_widget.view_direction == "horizontal"
 
 
+@fastplotlib_only
 def test_tree_plot_data_display(viewer, solution_tracks_2d):
     """Test TreePlot data display with empty data, track data, and view directions."""
     tree_widget = TreeWidget(viewer)
@@ -118,6 +127,7 @@ def test_tree_plot_selection(viewer, solution_tracks_2d):
     assert len(received[0]) == len(tree_plot._node_ids)
 
 
+@fastplotlib_only
 def test_centering(viewer, solution_tracks_2d):
     """Test centering on nodes via the fastplotlib camera."""
     tracks_viewer = TracksViewer.get_instance(viewer)
@@ -161,6 +171,7 @@ def test_centering(viewer, solution_tracks_2d):
     tree_plot.set_selection([1, 2, 3], "tree")
 
 
+@fastplotlib_only
 def test_adding_a_visible_node_to_the_selection_keeps_the_zoom(
     viewer, solution_tracks_2d
 ):
@@ -336,6 +347,7 @@ def test_keyboard_shortcuts_all(mock_move, viewer, solution_tracks_2d, qtbot):
     restore_mock.assert_called_once()
 
 
+@fastplotlib_only
 def test_scrolling_while_holding_y_zooms_instead_of_setting_a_division(
     viewer, solution_tracks_2d, qtbot
 ):
@@ -507,6 +519,7 @@ def _render_canvas_of(tree_widget):
     return getattr(figure_canvas, "_subwidget", figure_canvas)
 
 
+@fastplotlib_only
 def test_cleanup_releases_canvas(viewer, solution_tracks_2d):
     """cleanup() closes the wgpu canvas and releases the graphics it was drawing."""
     tracks_viewer = TracksViewer.get_instance(viewer)
@@ -532,6 +545,7 @@ def test_cleanup_releases_canvas(viewer, solution_tracks_2d):
     tree_widget.tree_widget.center_on_node(1)
 
 
+@fastplotlib_only
 def test_deleted_tree_widget_leaves_no_dangling_canvas(viewer):
     """A destroyed tree view must not leave a canvas behind in rendercanvas.
 

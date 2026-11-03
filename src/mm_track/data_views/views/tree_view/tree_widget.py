@@ -1,6 +1,8 @@
 # do not put the from __future__ import annotations as it breaks the injection
 
 import contextlib
+import os
+import sys
 
 import napari
 import numpy as np
@@ -22,7 +24,6 @@ from mm_track.data_views.keybindings_config import (
 )
 from mm_track.data_views.views.tree_view.flip_axes_widget import FlipTreeWidget
 from mm_track.data_views.views.tree_view.navigation_widget import NavigationWidget
-from mm_track.data_views.views.tree_view.tree_plot_fpl import TreePlot
 from mm_track.data_views.views.tree_view.tree_view_feature_widget import (
     TreeViewFeatureWidget,
 )
@@ -39,8 +40,26 @@ from mm_track.data_views.views.tree_view.tree_widget_utils import (
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
+def _tree_plot_class():
+    """The tree view's canvas: fastplotlib's, drawn on the GPU through wgpu, or
+    pyqtgraph's, drawn with Qt's painter, where wgpu can't run (in a web browser) or
+    isn't installed. MM_TRACK_TREE_BACKEND=pyqtgraph (or fastplotlib) picks one."""
+    backend = os.environ.get("MM_TRACK_TREE_BACKEND", "")
+    if backend != "pyqtgraph" and sys.platform != "emscripten":
+        try:
+            from mm_track.data_views.views.tree_view.tree_plot_fpl import TreePlot
+        except ImportError:
+            if backend == "fastplotlib":
+                raise
+        else:
+            return TreePlot
+    from mm_track.data_views.views.tree_view.tree_plot_pg import TreePlot
+
+    return TreePlot
+
+
 class TreeWidget(QWidget):
-    """fastplotlib-based widget for lineage tree visualization and navigation"""
+    """Widget for lineage tree visualization and navigation"""
 
     def __init__(self, viewer: napari.Viewer):
         super().__init__()
@@ -59,10 +78,10 @@ class TreeWidget(QWidget):
         self.tracks_viewer.node_selection_updated.connect(self._update_selected)
         self.tracks_viewer.tracks_updated.connect(self._update_track_data)
 
-        # Construct the tree view (fastplotlib) canvas widget
+        # Construct the tree view canvas widget
         layout = QVBoxLayout()
 
-        self.tree_widget: TreePlot = TreePlot()
+        self.tree_widget = _tree_plot_class()()
         self.tree_widget.update_selection.connect(
             self.tracks_viewer.select_node_set_from_history
         )
