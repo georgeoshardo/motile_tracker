@@ -67,7 +67,7 @@ class TreeWidget(QWidget):
         self.graph = None
         self.mode = "all"  # options: "all", "lineage"
         self.plot_type = "tree"  # options: "tree", "feature"
-        self.view_direction = "vertical"  # options: "horizontal", "vertical"
+        self.view_direction = "horizontal"  # options: "horizontal", "vertical"
 
         self.tracks_viewer = TracksViewer.get_instance(viewer)
         self.tracks_viewer.update_track_df(
@@ -385,7 +385,7 @@ class TreeWidget(QWidget):
             self.lineage_df = pd.DataFrame()
             self.mode = "all"
             self.mode_widget.show_all_radio.setChecked(True)
-            self.view_direction = "vertical"
+            self.view_direction = "horizontal"
             self.plot_type = "tree"
             self.plot_type_widget.show_tree_radio.setChecked(True)
             allow_flip = True
@@ -421,8 +421,8 @@ class TreeWidget(QWidget):
             )
 
     def _set_mode(self, mode: str) -> None:
-        """Set the display mode to all or lineage view. Currently, linage
-        view is always horizontal and all view is always vertical.
+        """Set the display mode to all or lineage view. Both start horizontal, with
+        time from left to right and the lineages in trench order from the top.
 
         Args:
             mode (str): The mode to set the view to. Options are "all" or "lineage"
@@ -431,14 +431,10 @@ class TreeWidget(QWidget):
             raise ValueError(f"Mode must be 'all' or 'lineage', got {mode}")
 
         self.mode = mode
+        self.view_direction = "horizontal"
         if mode == "all":
-            if self.plot_type == "tree":
-                self.view_direction = "vertical"
-            else:
-                self.view_direction = "horizontal"
             df = self.tracks_viewer.track_df
         elif mode == "lineage":
-            self.view_direction = "horizontal"
             self._update_lineage_df()
             df = self.lineage_df
         self.navigation_widget.view_direction = self.view_direction
@@ -462,10 +458,7 @@ class TreeWidget(QWidget):
             raise ValueError(f"Plot type must be 'tree' or 'feature', got {plot_type}")
 
         self.plot_type = plot_type
-        if plot_type == "tree" and self.mode == "all":
-            self.view_direction = "vertical"
-        else:
-            self.view_direction = "horizontal"
+        self.view_direction = "horizontal"
 
         current_feature = self.plot_type_widget.get_current_feature()
 
@@ -522,7 +515,8 @@ class TreeWidget(QWidget):
         self.lineage_df = self.tracks_viewer.track_df[
             self.tracks_viewer.track_df["node_id"].isin(visible)
         ].reset_index()
-        self.lineage_df["x_axis_pos"] = (
-            self.lineage_df["x_axis_pos"].rank(method="dense").astype(int) - 1
-        )
+        # keep the lanes (they are in trench order, with the parent near the mother);
+        # only move the shown lineages up to the top
+        if not self.lineage_df.empty:
+            self.lineage_df["x_axis_pos"] -= self.lineage_df["x_axis_pos"].min()
         self.navigation_widget.lineage_df = self.lineage_df

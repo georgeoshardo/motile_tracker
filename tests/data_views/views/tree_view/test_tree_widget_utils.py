@@ -10,6 +10,7 @@ from mm_track.data_views.views.tree_view.tree_widget_utils import (
     extract_sorted_tracks,
     get_features_from_tracks,
     get_tracklets,
+    trench_lanes,
 )
 
 
@@ -207,3 +208,28 @@ def test_get_tracklets_partition_property():
     all_nodes = [n for t in result for n in t]
     assert sorted(all_nodes) == [1, 2, 3, 4]
     assert len(all_nodes) == len(set(all_nodes))
+
+
+def test_trench_lanes_follow_the_trench():
+    # Two founders at frame 0: A near the closed end (row 10), B below it (row 50),
+    # and C, which first appears at frame 5 nearer the closed end than both.
+    # A divides into A1 (the mother, row 12) and A2 (row 30); A1 divides again.
+    starts = {
+        1: (0, 10.0),  # A
+        2: (0, 50.0),  # B
+        3: (5, 2.0),  # C
+        4: (10, 30.0),  # A2, listed before the mother to check the sort
+        5: (10, 12.0),  # A1
+        6: (20, 11.0),  # A1's mother daughter
+        7: (20, 20.0),  # A1's other daughter
+    }
+    parents = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 5, 7: 5}
+    lanes = trench_lanes(starts, parents)
+
+    # lineages in trench order, one empty lane between them: A, B, then C
+    assert (lanes[6], lanes[7], lanes[4]) == (0, 1, 2)
+    assert lanes[2] == 4
+    assert lanes[3] == 6
+    # each parent sits 1/8 of the way from its mother daughter to the other
+    assert lanes[5] == 0 + (1 - 0) / 8
+    assert lanes[1] == lanes[5] + (lanes[4] - lanes[5]) / 8

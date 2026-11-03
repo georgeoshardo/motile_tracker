@@ -19,7 +19,7 @@ SELECT_BUMP_MIN = 2.0  # ...but at least this, so a small node still reads as se
 # Markers are drawn in screen pixels, so a fixed size looks wrong at both ends of the
 # zoom range: zoomed out, the lanes pack closer until parallel lineages merge into one
 # blob; zoomed in, a handful of nodes float in a mostly empty canvas. In tree mode both
-# grids are one unit apart (integer x_axis_pos, integer t), so scale the markers with
+# grids are one unit apart (whole-numbered lanes, integer t), so scale the markers with
 # whichever of the two is tighter on screen: a glyph spans MARKER_FILL of that gap,
 # clamped to [MIN_SIZE, MAX_SIZE]. Feature mode keeps a fixed size — its value axis is
 # continuous, so it has no grid to measure.
@@ -112,13 +112,17 @@ def track_lookups(df: pd.DataFrame) -> TrackLookups:
     independent of funtracks' optional lineage feature.
     """
     row_track_ids = df["track_id"].to_numpy()
+    # Only whole-numbered lanes are labelled: a parent sits between its daughters'
+    # lanes (see tree_widget_utils.trench_lanes), and its line leads into theirs.
+    lanes = df["x_axis_pos"].to_numpy()
+    whole = lanes == np.round(lanes)
     lookups = TrackLookups(
         row_track_ids=row_track_ids,
         row_times=df["t"].to_numpy(),
         lane_track_ids=dict(
             zip(
-                df["x_axis_pos"].to_numpy().astype(int),
-                row_track_ids.astype(int),
+                lanes[whole].astype(int),
+                row_track_ids[whole].astype(int),
                 strict=True,
             )
         ),

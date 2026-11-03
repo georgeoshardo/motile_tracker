@@ -49,7 +49,7 @@ def test_tree_plot_initialization_and_update(viewer, solution_tracks_2d):
     assert tree_plot._scatter is not None
     assert len(tree_plot._positions) > 0
     assert tree_plot._edges is not None  # edges from graph_2d
-    assert tree_plot.view_direction == "vertical"
+    assert tree_plot.view_direction == "horizontal"
 
     # Test 2: Signals
     assert hasattr(tree_plot, "node_clicked")
@@ -225,7 +225,7 @@ def test_tree_widget_initialization(viewer, solution_tracks_2d):
     assert tree_widget is not None
     assert tree_widget.mode == "all"
     assert tree_widget.plot_type == "tree"
-    assert tree_widget.view_direction == "vertical"
+    assert tree_widget.view_direction == "horizontal"
     assert hasattr(tree_widget, "tree_widget")
     assert hasattr(tree_widget, "mode_widget")
     assert hasattr(tree_widget, "plot_type_widget")
@@ -413,10 +413,10 @@ def test_mode_and_plot_type_switching(viewer, solution_tracks_2d, click_node):
     with pytest.raises(ValueError, match="must be 'tree' or 'feature'"):
         tree_widget._set_plot_type("invalid")
 
-    # Test 7: Setting mode to 'all' with plot_type='tree' sets vertical view
+    # Test 7: Setting mode to 'all' with plot_type='tree' sets horizontal view
     tree_widget.plot_type = "tree"
     tree_widget._set_mode("all")
-    assert tree_widget.view_direction == "vertical"
+    assert tree_widget.view_direction == "horizontal"
 
     # Test 8: Setting mode to 'all' with plot_type='feature' sets horizontal view
     tree_widget.plot_type = "feature"
@@ -471,16 +471,16 @@ def test_tree_widget_integration(viewer, solution_tracks_2d):
     assert not tree_widget.tracks_viewer.track_df.empty
 
     # Test 2: flip_axes toggles between horizontal and vertical
-    # Start with vertical
-    assert tree_widget.view_direction == "vertical"
-
-    # Flip to horizontal
-    tree_widget.flip_axes()
+    # Start with horizontal
     assert tree_widget.view_direction == "horizontal"
 
-    # Flip back to vertical
+    # Flip to vertical
     tree_widget.flip_axes()
     assert tree_widget.view_direction == "vertical"
+
+    # Flip back to horizontal
+    tree_widget.flip_axes()
+    assert tree_widget.view_direction == "horizontal"
 
     # Test 3: set_mouse_enabled changes mouse behavior (should not raise error)
     tree_widget.set_mouse_enabled(x=True, y=False)

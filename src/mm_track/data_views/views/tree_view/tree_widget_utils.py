@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import napari.layers
 import numpy as np
 import pandas as pd
@@ -70,7 +68,6 @@ def get_tracklets(
 def extract_sorted_tracks(
     tracks: Tracks,
     colormap: napari.utils.CyclicLabelColormap,
-    prev_axis_order: list[int] | None = None,
 ) -> pd.DataFrame | None:
     """
     Extract the information of individual tracks required for constructing the tree
@@ -82,13 +79,13 @@ def extract_sorted_tracks(
             to be converted into a dataframe.
         colormap (napari.utils.CyclicLabelColormap): The colormap to use to
             extract the color of each node from the track ID
-        prev_axis_order (list[int], Optional). The previous axis order.
 
     Returns:
         pd.DataFrame | None: data frame with all the information needed to
         construct the tree plot. Columns are: 't', 'node_id', 'track_id',
         'color', 'x', 'y', ('z'), 'index', 'parent_id', 'parent_track_id',
-        'state', 'symbol', and 'x_axis_pos'
+        'state', 'symbol', and 'x_axis_pos' (the tracklet's lane, see
+        :func:`trench_lanes`)
     """
 
     if tracks is None or tracks.graph is None:
@@ -159,6 +156,16 @@ def extract_sorted_tracks(
     tid_to_color = dict(
         zip(unique_track_ids, colormap.map(np.asarray(unique_track_ids)), strict=True)
     )
+
+    # each tracklet's first node: where it starts in time and in the trench
+    first_nodes = [
+        min(node_set, key=node_to_time.__getitem__) for node_set in tracklets
+    ]
+    rows = tracks.get_positions(first_nodes)[:, -2] if first_nodes else np.empty(0)
+    starts = {
+        node_to_track_id[node]: (node_to_time[node], float(row))
+        for node, row in zip(first_nodes, rows, strict=True)
+    }
 
     for node_set in tracklets:
         # Sort nodes in each tracklet by time using the precomputed dict
@@ -236,16 +243,12 @@ def extract_sorted_tracks(
             {"track_id": track_id, "parent_track_id": parent_track_id, "node_id": node}
         )
 
-    x_axis_order = get_sorted_track_ids(
-        node_ids_list,
-        node_to_track_id,
-        child_to_parent,
-        parent_to_children,
-        prev_axis_order,
+    lanes = trench_lanes(
+        starts, {m["track_id"]: m["parent_track_id"] for m in parent_mapping}
     )
-
+    x_axis_order = sorted(lanes, key=lanes.get)
     for node in track_list:
-        node["x_axis_pos"] = x_axis_order.index(node["track_id"])
+        node["x_axis_pos"] = lanes[node["track_id"]]
 
     df = pd.DataFrame(track_list)
     return df, x_axis_order
@@ -261,101 +264,61 @@ def find_root(track_id: int, parent_map: dict) -> int:
     return current_track
 
 
-def order_roots_by_prev(prev_axis_order: list[int], roots: list[int]) -> list[int]:
-    """Order a list of root nodes by the previous order, insert missing orders immediately
-    to the right of the closest smaller numerical element.
+# Where a parent sits between its daughters, as a fraction of the way from the
+# mother (the daughter nearer the closed end) to the other daughter: near the mother,
+# so the mother's line barely moves at each division and the daughter drops away.
+TREE_SPLIT = 1 / 8
+
+
+def trench_lanes(
+    starts: dict[int, tuple[float, float]], parents: dict[int, int]
+) -> dict[int, float]:
+    """The lane of each tracklet in the lineage tree, in trench order.
+
+    Lineages are stacked as the cells sit in the trench: founders present from the
+    start first, from the closed end down, then those that appear later, one empty
+    lane between lineages. Within a lineage the daughter nearer the closed end (the
+    mother, which keeps the old pole) goes above her sister, and the parent sits
+    ``TREE_SPLIT`` of the way from her towards the sister. Every tracklet without
+    daughters gets a whole-numbered lane of its own.
 
     Args:
-        prev_axis_order (list[int]): the previous order of root nodes.
-        roots (list[int]): the to be sorted list of root nodes.
+        starts: track id -> (first time point, row position when first seen); row 0
+            is the trench's closed end.
+        parents: track id -> parent track id (0 or a missing id for none).
 
     Returns:
-        list[int]: sorted list of root nodes.
+        track id -> lane.
     """
+    children: dict[int, list[int]] = {}
+    for track_id, parent in parents.items():
+        if parent in starts:
+            children.setdefault(parent, []).append(track_id)
 
-    roots_in_prev = [r for r in prev_axis_order if r in roots]
-    missing = sorted(set(roots) - set(roots_in_prev))
+    def by_position(track_id):
+        t0, y0 = starts[track_id]
+        return (t0, y0, track_id)
 
-    for r in missing:
-        # find the index of the rightmost smaller element in roots_in_prev
-        smaller = [x for x in roots_in_prev if x < r]
-        idx = roots_in_prev.index(max(smaller)) + 1 if smaller else 0
-        roots_in_prev.insert(idx, r)
+    lanes: dict[int, float] = {}
+    next_lane = 0
 
-    return roots_in_prev
+    def place(track_id):
+        nonlocal next_lane
+        kids = sorted(children.get(track_id, []), key=lambda k: (starts[k][1], k))
+        if not kids:
+            lanes[track_id] = next_lane
+            next_lane += 1
+            return
+        for kid in kids:
+            place(kid)
+        keep = lanes[kids[0]]
+        lanes[track_id] = keep + TREE_SPLIT * (lanes[kids[-1]] - keep)
 
-
-def get_sorted_track_ids(
-    node_ids: list[int],
-    node_to_track_id: dict,
-    child_to_parent: dict[int, int],
-    parent_to_children: dict[int, list[int]],
-    prev_axis_order: list[int] | None = None,
-) -> list[Any]:
-    """
-    Extract the lineage tree plot order of the tracklet_ids on the graph, ensuring that
-    each tracklet_id is placed in between its daughter tracklet_ids and adjacent to its
-    parent track id.
-
-    Args:
-        node_ids: list of all node IDs.
-        node_to_track_id (dict): precomputed mapping from node_id to track_id.
-        child_to_parent: precomputed mapping from child node_id to parent node_id.
-        parent_to_children: precomputed mapping from parent node_id to child node_ids.
-        prev_axis_order (list[int], Optional). The previous axis order.
-
-    Returns:
-        list[Any] of ordered tracklet_ids.
-    """
-
-    # Topological sort via Kahn's algorithm (BFS from roots)
-    in_degree = {n: (1 if n in child_to_parent else 0) for n in node_ids}
-    queue = [n for n, d in in_degree.items() if d == 0]
-    topo_order = []
-    while queue:
-        node = queue.pop(0)
-        topo_order.append(node)
-        for succ in parent_to_children.get(node, []):
-            in_degree[succ] -= 1
-            if in_degree[succ] == 0:
-                queue.append(succ)
-
-    # Create tracklet_id to parent_tracklet_id mapping (0 if tracklet has no parent)
-    tracklet_to_parent_tracklet = {}
-    for node in topo_order:
-        tracklet = node_to_track_id[node]
-        if tracklet in tracklet_to_parent_tracklet:
-            continue
-        parent_id = child_to_parent.get(node)
-        parent_tracklet_id = node_to_track_id[parent_id] if parent_id is not None else 0
-        tracklet_to_parent_tracklet[tracklet] = parent_tracklet_id
-
-    # Final sorted order of roots
-    roots = sorted(
-        [tid for tid, ptid in tracklet_to_parent_tracklet.items() if ptid == 0]
-    )
-
-    # Optionally sort roots according to their position in prev_axis_order
-    if prev_axis_order is not None:
-        roots = order_roots_by_prev(prev_axis_order, roots)
-
-    x_axis_order = list(roots)
-
-    # Find the children of each of the starting points, and work down the tree.
-    while len(roots) > 0:
-        children_list = []
-        for tracklet_id in roots:
-            children = [
-                tid
-                for tid, ptid in tracklet_to_parent_tracklet.items()
-                if ptid == tracklet_id
-            ]
-            for i, child in enumerate(children):
-                [children_list.append(child)]
-                x_axis_order.insert(x_axis_order.index(tracklet_id) + i, child)
-        roots = children_list
-
-    return x_axis_order
+    roots = sorted((t for t in starts if parents.get(t) not in starts), key=by_position)
+    for root in roots:
+        place(root)
+        next_lane += 1  # gap between lineages
+    return lanes
 
 
 def extract_lineage_tree(graph: td.GraphView, node_id: str) -> list[str]:

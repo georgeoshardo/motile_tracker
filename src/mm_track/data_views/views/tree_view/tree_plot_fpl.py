@@ -100,7 +100,7 @@ class TreePlot(QWidget):
 
         self._closed = False  # set by close_figure(); the canvas is gone after that
         self._scrolled = False  # set by the wheel handler, read via `scrolled`
-        self.view_direction = "vertical"
+        self.view_direction = "horizontal"
         self.plot_type = "tree"
         self.feature = None
         self.track_df = pd.DataFrame()

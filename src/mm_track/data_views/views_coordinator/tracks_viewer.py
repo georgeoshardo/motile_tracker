@@ -259,10 +259,8 @@ class TracksViewer:
         Args:
             initialization (bool | None = False): whether or not this is called by a tree
                 or table widget that is initializing.
-            refresh_view (bool | None = False): whether or not we should not pass on the
-                previous axis_order. Should be False if we want to use the previous axis
-                order (current tracks got updated). Should be True if we have a new tracks
-                object and should therefore recompute the axis_order.
+            refresh_view (bool | None = False): unused here: the tree's order follows
+                the cells' positions in the trench, so it is recomputed every time.
         """
 
         if self.tracks is None:
@@ -283,16 +281,9 @@ class TracksViewer:
         # in the case menu_manager was never initialized, we cannot directly check if
         # widgets exist, so we always update the track_df if self.tracks is not None.
 
-        if refresh_view:
-            self.track_df, self.axis_order = extract_sorted_tracks(
-                self.tracks, self.colormap
-            )
-        else:
-            self.track_df, self.axis_order = extract_sorted_tracks(
-                self.tracks,
-                self.colormap,
-                self.axis_order,
-            )
+        self.track_df, self.axis_order = extract_sorted_tracks(
+            self.tracks, self.colormap
+        )
 
     def _refresh(self, node: str | None = None, refresh_view: bool = False) -> None:
         """Call refresh function on napari layers and the submit signal that tracks are
