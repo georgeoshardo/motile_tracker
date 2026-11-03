@@ -81,7 +81,6 @@ class KymographTrackPoints(Points):
             data=np.zeros((0, 2), dtype=float),
             name=name,
             symbol=[],
-            face_color=[],
             size=self.default_size,
             properties={"node_id": [], "track_id": []},
             border_color=[1, 1, 1, 1],
@@ -282,7 +281,8 @@ class KymographTrackPoints(Points):
             np.asarray(coords, dtype=float) if coords else np.zeros((0, 2), dtype=float)
         )
         self.symbol = self.get_symbols(tracks, self.tracks_viewer.symbolmap)
-        self.face_color = self._map_track_colors(track_ids)
+        if track_ids:  # napari warns about an empty color list
+            self.face_color = self._map_track_colors(track_ids)
         self.properties = {"node_id": self.nodes, "track_id": track_ids}
         self.size = self._display_size()
         self.border_color = [1, 1, 1, 1]

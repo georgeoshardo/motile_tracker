@@ -88,11 +88,14 @@ class LoadedGeff:
 
 @contextmanager
 def silence_geff_zarr_warnings() -> Iterator[None]:
-    """Silence the warnings zarr and geff emit for stores that hold non-geff members.
+    """Silence the warnings zarr and geff emit for stores that hold non-geff members,
+    and funtracks' notice that it numbers cells from 1.
 
     A store with images next to the graph, or a zarr v2 geff inside a zarr v3
     store, is exactly what this module is for, so the warnings say nothing the
-    user can act on (see also ``geff_io.write_geff_over``).
+    user can act on (see also ``geff_io.write_geff_over``). Nor does the notice:
+    a geff that numbers its cells from 0 is valid, and funtracks shifts the ids
+    on every load.
     """
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -102,6 +105,9 @@ def silence_geff_zarr_warnings() -> Iterator[None]:
         )
         warnings.filterwarnings(
             "ignore", message="Found non-geff members in zarr.*", category=UserWarning
+        )
+        warnings.filterwarnings(
+            "ignore", message="Found node_id 0 in the loaded graph", category=UserWarning
         )
         yield
 
