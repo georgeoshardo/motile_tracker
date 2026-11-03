@@ -227,6 +227,19 @@ class VisualizationWidget(QWidget):
         self.show_ortho_views.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         main_layout.addWidget(self.show_ortho_views)
+
+        self.show_help_text = QCheckBox("Show help text")
+        self.show_help_text.setToolTip(
+            "Show the click and key help in the bottom-right corner of the canvas"
+        )
+        self.show_help_text.setChecked(self.tracks_viewer.show_overlay_text)
+        self.show_help_text.stateChanged.connect(
+            lambda: self.tracks_viewer.set_show_overlay_text(
+                self.show_help_text.isChecked()
+            )
+        )
+        self.show_help_text.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        main_layout.addWidget(self.show_help_text)
         main_layout.addStretch(1)
 
         # No maximum height: the kymograph controls need the room, and the menu

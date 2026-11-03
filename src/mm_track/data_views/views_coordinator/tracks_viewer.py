@@ -118,6 +118,9 @@ class TracksViewer:
         }
         self.mode = "all"
         self.view_mode = "spatial"
+        # the click and key help in the bottom-right text overlay (see
+        # set_show_overlay_text)
+        self.show_overlay_text = True
         self.tracks: SolutionTracks | None = None
         self.visible: list | str = []
         self.tracking_layers = TracksLayerGroup(self.viewer, self.tracks, "", self)
@@ -193,8 +196,14 @@ class TracksViewer:
         if self.view_mode == "kymograph":
             text += "\nTime slider (below): pan along time, one frame per step"
         self.viewer.text_overlay.text = text
-        self.viewer.text_overlay.visible = True
+        self.viewer.text_overlay.visible = self.show_overlay_text
         self.viewer.text_overlay.font_size = 8
+
+    def set_show_overlay_text(self, show: bool) -> None:
+        """Show or hide the click and key help in the bottom-right text overlay. It is
+        kept that way through later display and view mode changes."""
+        self.show_overlay_text = bool(show)
+        self.viewer.text_overlay.visible = self.show_overlay_text
 
     def set_keybinds(self):
         bind_keymap(self.viewer, KEYMAP, self)
