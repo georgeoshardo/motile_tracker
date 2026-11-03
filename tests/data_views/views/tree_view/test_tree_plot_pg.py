@@ -255,3 +255,47 @@ def test_time_marks_are_drawn_and_kept_through_a_rebuild(plot):
     plot.set_time_marks(None, None)
     assert not plot._view_band.isVisible()
     assert not plot._hover_line.isVisible()
+
+
+def test_view_follows_the_band_along_time_only():
+    view = (50.0, -10.0, 100.0, 20.0)  # frames 0..100
+    assert shared.view_following_band(view, (40, -20, 60, 0), "horizontal") is None
+    cx, cy, w, h = shared.view_following_band(view, (120, -20, 130, 0), "horizontal")
+    assert (cy, w, h) == (-10.0, 100.0, 20.0)  # lanes and zoom kept
+    assert cx + w / 2 - shared.FOLLOW_MARGIN * w == pytest.approx(130)  # just in view
+    cx, *_ = shared.view_following_band(view, (-30, -20, -20, 0), "horizontal")
+    assert cx - w / 2 + shared.FOLLOW_MARGIN * w == pytest.approx(-30)
+    # vertical: time runs down y as -t
+    vertical = (5.0, -50.0, 10.0, 100.0)  # frames 0..100
+    _, cy, _, _ = shared.view_following_band(vertical, (0, -130, 10, -120), "vertical")
+    assert cy - 50 + shared.FOLLOW_MARGIN * 100 == pytest.approx(-130)
+
+
+def test_tree_opens_at_a_readable_time_scale():
+    rect = (-5.0, 255.0, -40.0, 1.0)  # 260 frames
+    assert shared.limit_time_span(rect, "horizontal", 70, None) == (
+        -5.0,
+        65.0,
+        -40.0,
+        1.0,
+    )
+    assert shared.limit_time_span(rect, "horizontal", 70, 150) == (
+        115.0,
+        185.0,
+        -40.0,
+        1.0,
+    )
+    assert shared.limit_time_span(rect, "horizontal", 70, 250) == (
+        185.0,
+        255.0,
+        -40.0,
+        1.0,
+    )
+    assert shared.limit_time_span(rect, "horizontal", 300, 150) == rect
+    vertical = (-1.0, 40.0, -255.0, 5.0)
+    assert shared.limit_time_span(vertical, "vertical", 70, None) == (
+        -1.0,
+        40.0,
+        -65.0,
+        5.0,
+    )

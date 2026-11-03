@@ -7,10 +7,12 @@ import sys
 import napari
 import numpy as np
 import pandas as pd
-from qtpy.QtCore import QEvent, QObject
+from qtpy.QtCore import QEvent, QObject, Qt
 from qtpy.QtGui import QKeyEvent
 from qtpy.QtWidgets import (
+    QFrame,
     QHBoxLayout,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -150,12 +152,22 @@ class TreeWidget(QWidget):
         panel.setLayout(panel_layout)
         panel.setMaximumWidth(1060)  # 930 + room for the options checkboxes
         panel.setMaximumHeight(82)
+        # the row of controls scrolls on its own when the tree's column is narrower,
+        # so that it does not make the whole tree view wider than the column
+        panel_scroll = QScrollArea()
+        panel_scroll.setWidget(panel)
+        panel_scroll.setWidgetResizable(True)
+        panel_scroll.setFrameShape(QFrame.NoFrame)
+        panel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        panel_scroll.setFixedHeight(
+            82 + panel_scroll.horizontalScrollBar().sizeHint().height()
+        )
 
         # Make a collapsible for TreeView widgets
         collapsible_widget = QCollapsible("Show/Hide Tree View Controls")
         collapsible_widget.layout().setContentsMargins(0, 0, 0, 0)
         collapsible_widget.layout().setSpacing(0)
-        collapsible_widget.addWidget(panel)
+        collapsible_widget.addWidget(panel_scroll)
         collapsible_widget.collapse(animate=False)
 
         tree_widget = QWidget()

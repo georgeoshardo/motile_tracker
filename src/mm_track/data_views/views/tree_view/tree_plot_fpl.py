@@ -946,10 +946,23 @@ class TreePlot(QWidget):
         self, frames: tuple[float, float] | None, hover: int | None
     ) -> None:
         """Show the kymograph's place: a band over the frames it shows and a line at
-        the frame under its cursor (see ``tree_plot_shared.time_marks``)."""
+        the frame under its cursor (see ``tree_plot_shared.time_marks``). When the
+        frames shown change, pan along time to keep the band in view."""
+        moved = frames != self._time_marks[0]
         self._time_marks = (frames, hover)
-        if not self._closed:
-            self._draw_time_marks()
+        if self._closed:
+            return
+        self._draw_time_marks()
+        if moved:
+            band, _ = shared.time_marks(
+                self._positions, self.view_direction, frames, None
+            )
+            with contextlib.suppress(Exception):  # the camera can't be read yet
+                view = shared.view_following_band(
+                    self._camera_view(), band, self.view_direction
+                )
+                if view is not None:
+                    self._set_camera_view(view)
 
     def _ensure_time_marks(self) -> None:
         if self._band_fill is not None:
@@ -1035,7 +1048,8 @@ class TreePlot(QWidget):
             self._figure.canvas.request_draw()
 
     def _reset_view(self) -> None:
-        """Fit the view to the node positions, filling the canvas.
+        """Fit the view to the node positions, filling the canvas; in tree mode, at
+        most as many frames as fit at TREE_PX_PER_FRAME, around the kymograph's.
 
         Framed directly from the scatter data via ``camera.show_rect`` rather than
         ``auto_scale``: auto_scale unions the bounds of *all* scene objects (the
@@ -1047,6 +1061,17 @@ class TreePlot(QWidget):
         rect = shared.reset_rect(self._positions)
         if rect is None:
             return
+        # in tree mode, at most as many frames as fit at TREE_PX_PER_FRAME, around
+        # the kymograph's
+        with contextlib.suppress(Exception):
+            width, height = self._subplot.viewport.logical_size
+            length = height if self.view_direction == "vertical" else width
+            if self.plot_type == "tree" and length > 50:
+                frames = self._time_marks[0]
+                focus = None if frames is None else (frames[0] + frames[1]) / 2
+                rect = shared.limit_time_span(
+                    rect, self.view_direction, length / shared.TREE_PX_PER_FRAME, focus
+                )
         # the axis lives in a dock outside the plot area, so no gutter compensation
         # is needed here — fit the data to the full (already-inset) plot viewport.
         with contextlib.suppress(Exception):
@@ -1138,13 +1163,17 @@ class TreePlot(QWidget):
             view = shared.view_fitting_rows(self._positions, rows, self._camera_view())
             if view is None:
                 return
-            cam = self._subplot.camera
-            state = cam.get_state()
-            new = dict(state)
-            new["position"] = (view[0], view[1], state["position"][2])
-            new["width"], new["height"] = view[2], view[3]
-            cam.set_state(new)
-            # clear in-flight momentum so the controller doesn't override the change
-            actions = getattr(self._subplot.controller, "_actions", None)
-            if actions:
-                actions.clear()
+            self._set_camera_view(view)
+
+    def _set_camera_view(self, view) -> None:
+        """Move the camera to ``view`` = (cx, cy, width, height)."""
+        cam = self._subplot.camera
+        state = cam.get_state()
+        new = dict(state)
+        new["position"] = (view[0], view[1], state["position"][2])
+        new["width"], new["height"] = view[2], view[3]
+        cam.set_state(new)
+        # clear in-flight momentum so the controller doesn't override the change
+        actions = getattr(self._subplot.controller, "_actions", None)
+        if actions:
+            actions.clear()

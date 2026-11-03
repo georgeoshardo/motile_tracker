@@ -348,9 +348,20 @@ class TreePlot(QWidget):
         self, frames: tuple[float, float] | None, hover: int | None
     ) -> None:
         """Show the kymograph's place: a band over the frames it shows and a line at
-        the frame under its cursor (see ``tree_plot_shared.time_marks``)."""
+        the frame under its cursor (see ``tree_plot_shared.time_marks``). When the
+        frames shown change, pan along time to keep the band in view."""
+        moved = frames != self._time_marks[0]
         self._time_marks = (frames, hover)
         self._draw_time_marks()
+        if moved:
+            band, _ = shared.time_marks(
+                self._positions, self.view_direction, frames, None
+            )
+            view = shared.view_following_band(
+                self._current_view(), band, self.view_direction
+            )
+            if view is not None:
+                self._set_view(*view)
 
     def _draw_time_marks(self) -> None:
         band, line = shared.time_marks(
@@ -644,8 +655,20 @@ class TreePlot(QWidget):
         )
 
     def _reset_view(self) -> None:
-        """Fit the view to the node positions, filling the canvas."""
+        """Fit the view to the node positions, filling the canvas; in tree mode, at
+        most as many frames as fit at TREE_PX_PER_FRAME, around the kymograph's."""
         rect = shared.reset_rect(self._positions)
+        length = (
+            self._view.height()
+            if self.view_direction == "vertical"
+            else (self._view.width())
+        )
+        if rect is not None and self.plot_type == "tree" and length > 50:
+            frames = self._time_marks[0]
+            focus = None if frames is None else (frames[0] + frames[1]) / 2
+            rect = shared.limit_time_span(
+                rect, self.view_direction, length / shared.TREE_PX_PER_FRAME, focus
+            )
         if rect is not None:
             self._view.setRange(
                 xRange=rect[:2], yRange=rect[2:], padding=0, update=True

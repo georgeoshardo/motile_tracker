@@ -102,6 +102,40 @@ def time_marks(
     return band, line
 
 
+FOLLOW_MARGIN = 0.05  # of the view's time span, kept between the band and the edge
+
+
+def view_following_band(
+    view: tuple[float, float, float, float],
+    band: tuple[float, float, float, float] | None,
+    view_direction: str,
+) -> tuple[float, float, float, float] | None:
+    """The view (cx, cy, width, height) panned along time just far enough to show
+    ``band`` (from ``time_marks``) with a margin, or None if it is in view already.
+    The zoom and the lanes shown stay as they are; a band wider than the view is
+    centred.
+    """
+    if band is None:
+        return None
+    cx, cy, width, height = view
+    vertical = view_direction == "vertical"
+    low, high = (band[1], band[3]) if vertical else (band[0], band[2])
+    center, span = (cy, height) if vertical else (cx, width)
+    margin = FOLLOW_MARGIN * span
+    first, last = center - span / 2 + margin, center + span / 2 - margin
+    if high - low > last - first:
+        new_center = (low + high) / 2
+    elif low < first:
+        new_center = center - (first - low)
+    elif high > last:
+        new_center = center + (high - last)
+    else:
+        return None
+    return (
+        (cx, new_center, width, height) if vertical else (new_center, cy, width, height)
+    )
+
+
 def node_positions(
     df: pd.DataFrame, view_direction: str, plot_type: str, feature: str | None
 ) -> np.ndarray:
@@ -319,6 +353,33 @@ def reset_rect(positions: np.ndarray) -> tuple[float, float, float, float] | Non
     px = (xmax - xmin) * 0.05 or 1.0
     py = (ymax - ymin) * 0.05 or 1.0
     return xmin - px, xmax + px, ymin - py, ymax + py
+
+
+# In tree mode the view opens at a readable scale along time, this many screen
+# pixels per frame, rather than squeezing the whole movie into the plot; it follows
+# the kymograph from there (view_following_band).
+TREE_PX_PER_FRAME = 5.0
+
+
+def limit_time_span(
+    rect: tuple[float, float, float, float],
+    view_direction: str,
+    span: float,
+    focus: float | None,
+) -> tuple[float, float, float, float]:
+    """``rect`` (xmin, xmax, ymin, ymax) with its time range cut to at most ``span``
+    frames: centred on frame ``focus`` (kept inside the data), or from the start."""
+    xmin, xmax, ymin, ymax = rect
+    vertical = view_direction == "vertical"
+    low, high = (-ymax, -ymin) if vertical else (xmin, xmax)
+    if high - low <= span:
+        return rect
+    if focus is None:
+        low, high = low, low + span
+    else:
+        center = min(max(focus, low + span / 2), high - span / 2)
+        low, high = center - span / 2, center + span / 2
+    return (xmin, xmax, -high, -low) if vertical else (low, high, ymin, ymax)
 
 
 def rows_fit(positions: np.ndarray, rows: list[int], view) -> bool:
