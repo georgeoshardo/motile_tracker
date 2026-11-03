@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import zlib
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -48,7 +49,8 @@ class Store:
                         self.lock.flush()
                         self.lock.seek(0)
                         msvcrt.locking(self.lock.fileno(), msvcrt.LK_NBLCK, 1)
-                    else:
+                    elif sys.platform != "emscripten":
+                        # a browser page's files are its own, and Pyodide has no fcntl
                         import fcntl
 
                         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
