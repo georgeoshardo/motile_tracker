@@ -35,8 +35,12 @@ if TYPE_CHECKING:
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
-# Smallest on-screen size of a kymograph marker, in screen pixels.
+# Smallest on-screen size of a kymograph marker, in screen pixels...
 MIN_SCREEN_SIZE = 15
+# ...unless that would make it wider than this fraction of a frame (a cell is about a
+# quarter of a trench's width, so this keeps a marker within half a cell): on a small
+# canvas, or zoomed far out, a fixed screen size would cover the cells.
+MAX_FRAME_FRACTION = 0.12
 
 
 class KymographTrackPoints(Points):
@@ -189,7 +193,8 @@ class KymographTrackPoints(Points):
 
     def _display_size(self) -> float:
         """The marker size to draw, in data units: ``default_size``, but never less
-        than MIN_SCREEN_SIZE screen pixels.
+        than MIN_SCREEN_SIZE screen pixels, nor (for that minimum) more than
+        MAX_FRAME_FRACTION of a frame's width.
 
         A kymograph page is thousands of pixels wide, so at the zoom that fits a page
         small markers shrink to a dot. napari's ``canvas_size_limits`` would enlarge
@@ -197,7 +202,11 @@ class KymographTrackPoints(Points):
         so the size is set from the camera zoom instead.
         """
         zoom = float(self.tracks_viewer.viewer.camera.zoom) or 1.0
-        return max(float(self.default_size), MIN_SCREEN_SIZE / zoom)
+        legible = min(
+            MIN_SCREEN_SIZE / zoom,
+            MAX_FRAME_FRACTION * self.geometry.frame_world_width,
+        )
+        return max(float(self.default_size), legible)
 
     def _apply_sizes(self) -> None:
         """Size every marker from _display_size, selected ones 30% larger."""
