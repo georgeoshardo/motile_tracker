@@ -112,12 +112,19 @@ RAW_AXES = {"axis_names": ["time", "y", "x"]}
 
 
 def write_trench(
-    group: Path, *, break_tracklet: bool, raw: bool = False, zarr_format: int = 2
+    group: Path,
+    *,
+    break_tracklet: bool,
+    raw: bool = False,
+    zarr_format: int = 2,
+    nan_scores: bool = False,
 ):
     """A trench in the archive's layout, or with ``raw`` in the layout of the raw
     Trackastra export: 32-bit time, label and positions, node and link
     ``weight`` properties, another property order, its own ``extra``, no
-    ``axis_types`` on the arrays, and a ``_COMPLETE.json`` export marker."""
+    ``axis_types`` on the arrays, and a ``_COMPLETE.json`` export marker.
+    ``nan_scores`` adds a link ``score`` that is NaN throughout, as a tracker that
+    scores nothing writes it."""
     group.mkdir(parents=True)
     (group / "zarr.json").write_text(
         json.dumps({"attributes": {}, "zarr_format": 3, "node_type": "group"}, indent=2)
@@ -190,7 +197,11 @@ def write_trench(
             "label": seg_id.copy(),
             "time": t,
         }
-        edge_props = {}
+        edge_props = (
+            {"score": np.full(len(LINKS), np.nan, dtype=np.float32)}
+            if nan_scores
+            else {}
+        )
         extra = {
             "selected_cleanliness_export": {"trench_id": 1, "after_continuity_count": 3}
         }
@@ -459,6 +470,57 @@ def test_first_edit_publishes_in_the_dataset_format(archive, tmp_path):
     _, table, edges, labels = published(geff)
     assert (2, 4) in edges
     assert np.count_nonzero(labels[3] == 1) == 5 * 6
+
+
+def test_nan_link_scores_are_saved_and_kept(tmp_path, zarr_format):
+    geff = write_trench(
+        tmp_path / "store" / "trench_a",
+        break_tracklet=False,
+        zarr_format=zarr_format,
+        nan_scores=True,
+    )
+    session, tracks = open_for_editing(geff, tmp_path)
+
+    UserDeleteNode(tracks, internal(4))
+    session.flush()
+
+    assert session.error is None
+    assert has_history(geff)
+    root = zarr.open_group(str(geff), mode="r")
+    edges = [tuple(e) for e in root["edges/ids"][:].astype(int).tolist()]
+    assert (2, 4) not in edges
+    assert np.isnan(root["edges/props/score/values"][:]).all()
+    session.close()
+
+    tracks = load_geff_group(geff).tracks  # reopens the history
+    reopened = tracks.edit_session
+    assert not tracks.graph_solution.has_node(internal(4))
+    tracks.undo()
+    reopened.flush()
+    reopened.close()
+    edges = [
+        tuple(e)
+        for e in zarr.open_group(str(geff), mode="r")["edges/ids"][:].astype(int)
+    ]
+    assert (2, 4) in edges
+
+
+def test_a_failed_first_save_undoes_the_edit(valid_archive, tmp_path, monkeypatch):
+    session, tracks = open_for_editing(valid_archive, tmp_path)
+    assert type(tracks).__name__ == "Tracks"  # as loaded from a GEFF
+    nodes = sorted(tracks.graph.node_ids())
+
+    def fail(*args, **kwargs):
+        raise OSError("disk is full")
+
+    monkeypatch.setattr(EditSession, "create", fail)
+    with pytest.raises(RuntimeError, match="disk is full"):
+        UserDeleteNode(tracks, internal(4))
+
+    assert sorted(tracks.graph.node_ids()) == nodes
+    assert "disk is full" in session.error
+    assert not has_history(valid_archive)
+    session.close()
 
 
 def test_split_gives_a_new_id_and_the_lowest_free_label(archive, tmp_path):

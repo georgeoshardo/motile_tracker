@@ -186,6 +186,8 @@ class TracksList(QGroupBox):
         self._save_name_edited = False
         self._sessions = {}
         self._reported_rejections = {}
+        self._reported_errors = {}
+        self._error_dialog = None
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(250)
         self._status_timer.timeout.connect(self._update_autosave_status)
@@ -380,6 +382,7 @@ class TracksList(QGroupBox):
             if not session.closed:
                 session.poll()
                 self._report_rejection(session)
+                self._report_error(session)
         selected = self.tracks_list.selectedItems()
         if selected:
             tracks = self.tracks_list.itemWidget(selected[0]).tracks
@@ -410,6 +413,23 @@ class TracksList(QGroupBox):
                 "or fix it; the GEFF is written again once the tracks pass."
             )
         self._reported_rejections[session.path] = session.rejected
+
+    def _report_error(self, session):
+        # Saving has stopped, so every further edit is lost when the window closes.
+        # A notification fades and the status line is on another tab: say it in a
+        # dialog that stays until dismissed, once per failure.
+        error = session.error
+        if error and error != self._reported_errors.get(session.path):
+            self._error_dialog = QMessageBox(
+                QMessageBox.Icon.Critical,
+                "Edits are not being saved",
+                f"Saving edits to {session.path} has stopped:\n\n{error}\n\n"
+                "The edit that failed was undone, and later edits will be undone "
+                "too. Reopen the trench before editing further.",
+                parent=self,
+            )
+            self._error_dialog.open()
+        self._reported_errors[session.path] = error
 
     def close_sessions(self):
         # Also called after C++ widget destruction; use only Python state here.

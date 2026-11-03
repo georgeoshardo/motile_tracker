@@ -15,7 +15,10 @@ from tracksdata.nodes import Mask
 
 
 def dumps(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    # NaN and infinity are written as NaN/Infinity (which json.loads reads back):
+    # a GEFF from another tool can hold them, for example an edge score left as
+    # NaN, and its original values are kept verbatim in the format record.
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 class Encoder:

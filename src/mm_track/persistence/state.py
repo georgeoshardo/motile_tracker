@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tracksdata as td
-from funtracks.data_model import SolutionTracks
+from funtracks.data_model import SolutionTracks, Tracks
 from funtracks.features import FeatureDict
 
 from .codec import decode, decode_action, decode_dtype, encode_action, encode_dtype
@@ -105,7 +105,9 @@ def restore(state, get_blob, into=None):
         )
     else:
         tracks = into if into is not None else object.__new__(SolutionTracks)
-        SolutionTracks.__init__(
+        # Tracks.__init__, not SolutionTracks': `into` may be a plain Tracks (as
+        # loaded from a GEFF), and SolutionTracks only adds a deprecation warning.
+        Tracks.__init__(
             tracks, graph, scale=header["scale"], ndim=header["ndim"], features=features
         )
     tracks.node_id_counter = header["node_id_counter"]
