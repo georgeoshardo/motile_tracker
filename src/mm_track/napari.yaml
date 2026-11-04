@@ -30,6 +30,9 @@ contributions:
     - id: mm-track.editing_selection
       python_name: mm_track.application_menus.main_app:EditingSelection_LauncherWidget
       title: "Open Editing && Selection menu"
+    - id: mm-track.view_mode
+      python_name: mm_track.application_menus.main_app:ViewMode_LauncherWidget
+      title: "Open View mode menu"
     - id: mm-track.visualization
       python_name: mm_track.application_menus.main_app:Visualization_LauncherWidget
       title: "Open Visualization menu"
@@ -74,6 +77,8 @@ contributions:
       display_name: Widget - Kymograph Data
     - command: mm-track.editing_selection
       display_name: Widget - Editing & Selection
+    - command: mm-track.view_mode
+      display_name: Widget - View mode
     - command: mm-track.visualization
       display_name: Widget - Visualization
     - command: mm-track.features

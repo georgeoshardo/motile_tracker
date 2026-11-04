@@ -20,6 +20,7 @@ from mm_track.application_menus.menu_manager import (
     MenuManager,
 )
 from mm_track.application_menus.track_list_widget import TrackListWidget
+from mm_track.application_menus.view_mode_widget import ViewModeWidget
 from mm_track.application_menus.visualization_widget import (
     VisualizationWidget,
 )
@@ -37,6 +38,7 @@ MENU_WIDGETS = {
     "Tracks List": {"widget": TrackListWidget, "location": "right"},
     "Kymograph Data": {"widget": KymographDataWidget, "location": "right"},
     "Editing && Selection": {"widget": EditingSelectionWidget, "location": "right"},
+    "View mode": {"widget": ViewModeWidget, "location": "right"},
     "Visualization": {"widget": VisualizationWidget, "location": "right"},
     "Features": {"widget": FeatureWidget, "location": "right"},
     "Groups": {"widget": GroupWidget, "location": "right"},
@@ -68,7 +70,13 @@ class StartupWidget(QWidget):
         widgets = MENU_WIDGETS
         active_tab = "Kymograph Data"
         if mode == "tracking":
-            subset = ["Tracking", "Tracks List", "Visualization", "Lineage View"]
+            subset = [
+                "Tracking",
+                "Tracks List",
+                "View mode",
+                "Visualization",
+                "Lineage View",
+            ]
             widgets = {k: MENU_WIDGETS[k] for k in subset}
             active_tab = "Tracking"
         elif mode == "editing":
@@ -76,6 +84,7 @@ class StartupWidget(QWidget):
                 "Tracks List",
                 "Kymograph Data",
                 "Editing && Selection",
+                "View mode",
                 "Visualization",
                 "Features",
                 "Groups",
@@ -148,6 +157,7 @@ Tracking_LauncherWidget = _make_single_menu_widget_class("Tracking")
 TrackList_LauncherWidget = _make_single_menu_widget_class("Tracks List")
 KymographData_LauncherWidget = _make_single_menu_widget_class("Kymograph Data")
 EditingSelection_LauncherWidget = _make_single_menu_widget_class("Editing && Selection")
+ViewMode_LauncherWidget = _make_single_menu_widget_class("View mode")
 Visualization_LauncherWidget = _make_single_menu_widget_class("Visualization")
 Feature_LauncherWidget = _make_single_menu_widget_class("Features")
 Groups_LauncherWidget = _make_single_menu_widget_class("Groups")
