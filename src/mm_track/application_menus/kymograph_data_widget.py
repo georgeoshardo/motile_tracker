@@ -176,18 +176,22 @@ class KymographDataWidget(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            # switch to the spatial view first so that the image layers added by
-            # earlier loads are back in the viewer and can be removed
-            if self.tracks_viewer.view_mode == "kymograph":
-                self.tracks_viewer.set_view_mode("spatial")
-            if self.replace_checkbox.isChecked():
-                self._remove_loaded_images()
-            loaded = add_geff_group_to_viewer(
-                self.viewer,
-                group.path,
-                group.name,
-                kymograph=self.kymograph_checkbox.isChecked(),
-            )
+            # One batch for the canvas: napari rebuilds its scene graph, after a full
+            # garbage collection, on every layer removed outside a batch, and a switch
+            # removes and adds about twenty layers (0.15 s each on a large heap).
+            with self.viewer.layers.batched_update():
+                # switch to the spatial view first so that the image layers added by
+                # earlier loads are back in the viewer and can be removed
+                if self.tracks_viewer.view_mode == "kymograph":
+                    self.tracks_viewer.set_view_mode("spatial")
+                if self.replace_checkbox.isChecked():
+                    self._remove_loaded_images()
+                loaded = add_geff_group_to_viewer(
+                    self.viewer,
+                    group.path,
+                    group.name,
+                    kymograph=self.kymograph_checkbox.isChecked(),
+                )
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Error", f"Failed to load {group.name}: {e}")
             self._set_status(f"Failed to load {group.name}: {e}", error=True)
