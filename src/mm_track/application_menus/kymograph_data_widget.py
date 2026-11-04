@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import napari
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,14 +26,21 @@ from mm_track.import_export.geff_collection import (
     LoadedGeff,
     add_geff_group_to_viewer,
     find_geff_groups,
+    prefetch_geff_group,
 )
+
+# How long after a load to start importing the next group in the background: long
+# enough for the loaded one to be drawn first.
+PREFETCH_DELAY_MS = 300
 
 
 class KymographDataWidget(QWidget):
     """Browse a zarr store for GEFF groups (for example one per mother machine
     trench, each with its image and segmentation next to the graph) and load one of
     them, image included, straight into the kymograph view. A group loads as soon
-    as it is picked from the list, or stepped to with the arrows.
+    as it is picked from the list, or stepped to with the arrows; the group after it
+    (in the direction of the last step) is then imported in the background, so that
+    stepping on is quicker.
 
     Loaded tracks go to the Tracks List, so they can be edited, saved and exported
     like tracks loaded any other way.
@@ -46,6 +53,8 @@ class KymographDataWidget(QWidget):
         self.groups: list[GeffGroup] = []
         self._loaded_image_layers: list[napari.layers.Image] = []
         self._loaded_name: str | None = None
+        self._loaded_index: int | None = None
+        self._step = 1  # direction of the last step through the list
 
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
@@ -129,6 +138,7 @@ class KymographDataWidget(QWidget):
         """List the geff groups in the store named in the path field."""
         self.group_box.clear()
         self.groups = []
+        self._loaded_index = None
         text = self.path_edit.text().strip()
         if not text:
             self._set_status("")
@@ -206,9 +216,26 @@ class KymographDataWidget(QWidget):
         summary = f"{graph.num_nodes()} nodes, {graph.num_edges()} edges"
         if loaded.image is None:
             summary += ", no image"
+        index = self.group_box.currentIndex()
+        if self._loaded_index is not None and index != self._loaded_index:
+            self._step = 1 if index > self._loaded_index else -1
         self._loaded_name = group.name
+        self._loaded_index = index
         self._set_status(f"Loaded {group.name}: {summary}")
+        QTimer.singleShot(PREFETCH_DELAY_MS, self._prefetch_following)
         return loaded
+
+    def _prefetch_following(self) -> None:
+        """Start importing the group the user is likely to open next."""
+        if self._loaded_index is None:
+            return
+        index = self._loaded_index + self._step
+        if not 0 <= index < len(self.groups):
+            return
+        path = self.groups[index].path
+        if Path(path).resolve() in self.tracks_viewer.tracks_list._sessions:
+            return  # opened before: loading it again is quick
+        prefetch_geff_group(path)
 
     def _on_group_picked(self, _index: int) -> None:
         """Load the group picked from the list, unless it is the one already

@@ -235,3 +235,84 @@ def test_edits_in_kymograph_mode_are_saved_from_the_tracks_list(
     assert reloaded.graph.num_edges() == 3
     assert not reloaded.graph.has_edge(3, 4)
     assert reloaded.graph.has_edge(1, 3)
+
+
+def test_a_prefetched_geff_loads_without_importing_again(
+    geff_collection_store, monkeypatch
+):
+    """load_geff_group takes the tracks prefetch_geff_group imported in the
+    background, and only for the geff (and scale) that was prefetched."""
+    from mm_track.import_export import geff_collection
+
+    imports = []
+    real_import = geff_collection.import_from_geff
+    monkeypatch.setattr(
+        geff_collection,
+        "import_from_geff",
+        lambda *args, **kwargs: imports.append(args[0]) or real_import(*args, **kwargs),
+    )
+    trench_a, trench_b = (
+        group.path for group in find_geff_groups(geff_collection_store)
+    )
+
+    geff_collection.prefetch_geff_group(trench_a)
+    geff_collection._prefetcher._pending[2].result()  # let the import finish
+    loaded = load_geff_group(trench_a)
+
+    assert len(imports) == 1  # in the background, not again here
+    assert loaded.tracks.graph.num_nodes() == 6
+
+    geff_collection.prefetch_geff_group(trench_a)
+    load_geff_group(trench_b)  # another geff: imported here, the prefetch dropped
+    assert len(imports) == 3
+    assert geff_collection._prefetcher._pending is None
+
+
+def test_a_geff_that_gained_a_history_is_not_taken_from_the_prefetch(
+    geff_collection_store, monkeypatch
+):
+    """Its history (edits made since) wins over the tracks imported before."""
+    from mm_track.import_export import geff_collection
+
+    trench_a = find_geff_groups(geff_collection_store)[0].path
+    geff_collection.prefetch_geff_group(trench_a)
+    prefetched = geff_collection._prefetcher._pending[2].result()
+
+    monkeypatch.setattr(geff_collection, "has_history", lambda path: True)
+    assert geff_collection._prefetcher.take(trench_a, None) is None
+
+    monkeypatch.undo()
+    geff_collection.prefetch_geff_group(trench_a)
+    assert geff_collection._prefetcher.take(trench_a, None) is not prefetched
+
+
+def test_edits_to_a_prefetched_geff_are_saved(
+    make_napari_viewer, geff_collection_store, monkeypatch
+):
+    """Tracks from the prefetch get an edit session like any loaded tracks: an edit
+    starts the geff's history and is written to the geff."""
+    from mm_track.import_export import geff_collection
+    from mm_track.persistence.session import has_history
+
+    imports = []
+    real_import = geff_collection.import_from_geff
+    monkeypatch.setattr(
+        geff_collection,
+        "import_from_geff",
+        lambda *args, **kwargs: imports.append(args[0]) or real_import(*args, **kwargs),
+    )
+    geff = geff_collection_store / "trench_a" / "tracking_graph.geff"
+    geff_collection.prefetch_geff_group(geff)
+    geff_collection._prefetcher._pending[2].result()
+    viewer = make_napari_viewer()
+    add_geff_group_to_viewer(viewer, geff, "trench_a")
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    assert len(imports) == 1  # the prefetch only
+
+    tracks_viewer.selected_nodes.add(3)
+    tracks_viewer.selected_nodes.add(4, append=True)
+    tracks_viewer.delete_edge()
+    tracks_viewer.tracks_list._sessions[geff.resolve()].flush()
+
+    assert has_history(geff)
+    assert not import_from_geff(geff).graph.has_edge(3, 4)

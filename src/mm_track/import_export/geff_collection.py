@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import warnings
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,18 +99,23 @@ def silence_geff_zarr_warnings() -> Iterator[None]:
     on every load.
     """
     with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="Object at .* is not recognized as a component of a Zarr hierarchy",
-            category=UserWarning,
-        )
-        warnings.filterwarnings(
-            "ignore", message="Found non-geff members in zarr.*", category=UserWarning
-        )
-        warnings.filterwarnings(
-            "ignore", message="Found node_id 0 in the loaded graph", category=UserWarning
-        )
+        _ignore_geff_zarr_warnings()
         yield
+
+
+def _ignore_geff_zarr_warnings() -> None:
+    """Add the filters of silence_geff_zarr_warnings to the current warning filters."""
+    warnings.filterwarnings(
+        "ignore",
+        message="Object at .* is not recognized as a component of a Zarr hierarchy",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore", message="Found non-geff members in zarr.*", category=UserWarning
+    )
+    warnings.filterwarnings(
+        "ignore", message="Found node_id 0 in the loaded graph", category=UserWarning
+    )
 
 
 def _read_json(path: Path) -> dict:
@@ -272,6 +278,79 @@ def open_array(path: Path) -> np.ndarray | zarr.Array:
     return array
 
 
+def _build_tracks(geff_path: Path, scale: list[float] | None) -> Tracks:
+    """Import the tracks of a geff that has no edit history (see load_geff_group)."""
+    metadata = GeffMetadata.read(geff_path)
+    related = read_related_arrays(geff_path, metadata)
+    name_map = node_name_map_from_metadata(metadata, related.label_prop)
+    return import_from_geff(
+        geff_path,
+        name_map or None,
+        segmentation_path=related.labels_path,
+        scale=scale,
+    )
+
+
+def _build_tracks_in_background(geff_path: Path, scale: list[float] | None) -> Tracks:
+    # catch_warnings is not thread safe: leaving it here could undo filters the main
+    # thread set meanwhile, so the filters are added for good instead (they are
+    # applied on every load anyway).
+    _ignore_geff_zarr_warnings()
+    return _build_tracks(geff_path, scale)
+
+
+class _TracksPrefetcher:
+    """Imports the tracks of one geff in a background thread, ahead of loading it.
+
+    Importing a geff (reading the graph and the segmentation, and building the masks)
+    is the slowest part of loading one; started while the user works on another
+    group, it is done by the time they open this one. Only geffs without an edit
+    history are prefetched: opening a history takes the dataset's writer lock.
+    """
+
+    def __init__(self):
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="geff")
+        self._pending: tuple[Path, list[float] | None, Future] | None = None
+
+    def prefetch(self, geff_path: Path, scale: list[float] | None = None) -> None:
+        path = Path(geff_path).resolve()
+        if self._pending is not None and self._pending[:2] == (path, scale):
+            return
+        self._pending = None
+        if has_history(path):
+            return
+        future = self._pool.submit(_build_tracks_in_background, path, scale)
+        self._pending = (path, scale, future)
+
+    def take(self, geff_path: Path, scale: list[float] | None) -> Tracks | None:
+        """The prefetched tracks of this geff, or None if they are not (or no
+        longer) valid: another geff was prefetched, or it has a history now."""
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return None
+        path, prefetched_scale, future = pending
+        if (path, prefetched_scale) != (Path(geff_path).resolve(), scale):
+            future.cancel()
+            return None
+        if has_history(path):
+            return None
+        try:
+            return future.result()
+        except Exception:  # noqa: BLE001 - loading again reports the error
+            logger.debug("Prefetching %s failed", path, exc_info=True)
+            return None
+
+
+_prefetcher = _TracksPrefetcher()
+
+
+def prefetch_geff_group(geff_path: Path, scale: list[float] | None = None) -> None:
+    """Start importing a geff's tracks in the background, so that a later
+    load_geff_group of it (with the same scale) is quicker. Only the most recent
+    request is kept."""
+    _prefetcher.prefetch(geff_path, scale)
+
+
 def load_geff_group(
     geff_path: Path,
     name: str | None = None,
@@ -304,17 +383,13 @@ def load_geff_group(
                 session.flush()
             metadata = GeffMetadata.read(geff_path)
             related = read_related_arrays(geff_path, metadata)
-            name_map = node_name_map_from_metadata(metadata, related.label_prop)
-            tracks = (
-                session.tracks
-                if session is not None
-                else import_from_geff(
-                    geff_path,
-                    name_map or None,
-                    segmentation_path=related.labels_path,
-                    scale=scale,
-                )
-            )
+            prefetched = _prefetcher.take(geff_path, scale)
+            if session is not None:
+                tracks = session.tracks
+            elif prefetched is not None:
+                tracks = prefetched
+            else:
+                tracks = _build_tracks(geff_path, scale)
         image = (
             open_array(related.image_path) if related.image_path is not None else None
         )
