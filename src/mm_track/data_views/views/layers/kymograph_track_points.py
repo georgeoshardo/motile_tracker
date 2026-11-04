@@ -68,6 +68,7 @@ class KymographTrackPoints(Points):
         geometry: KymographGeometry,
         page_start: int,
         page_length: int,
+        size_scale: float = 1.0,
     ):
         self.tracks_viewer = tracks_viewer
         self.geometry = geometry
@@ -76,6 +77,8 @@ class KymographTrackPoints(Points):
         self.nodes: list[int] = []
         self.node_index_dict: dict[int, int] = {}
         self.default_size = 2.5
+        # set from the Visualization menu: the markers are drawn this many times larger
+        self.size_scale = float(size_scale)
 
         super().__init__(
             data=np.zeros((0, 2), dtype=float),
@@ -190,10 +193,15 @@ class KymographTrackPoints(Points):
         self.default_size = size
         self._refresh()
 
+    def set_size_scale(self, scale: float) -> None:
+        """Draw the markers ``scale`` times their size (see _display_size)."""
+        self.size_scale = float(scale)
+        self._apply_sizes()
+
     def _display_size(self) -> float:
         """The marker size to draw, in data units: ``default_size``, but never less
         than MIN_SCREEN_SIZE screen pixels, nor (for that minimum) more than
-        MAX_FRAME_FRACTION of a frame's width.
+        MAX_FRAME_FRACTION of a frame's width; then times ``size_scale``.
 
         A kymograph page is thousands of pixels wide, so at the zoom that fits a page
         small markers shrink to a dot. napari's ``canvas_size_limits`` would enlarge
@@ -205,7 +213,7 @@ class KymographTrackPoints(Points):
             MIN_SCREEN_SIZE / zoom,
             MAX_FRAME_FRACTION * self.geometry.frame_world_width,
         )
-        return max(float(self.default_size), legible)
+        return self.size_scale * max(float(self.default_size), legible)
 
     def _apply_sizes(self) -> None:
         """Size every marker from _display_size, selected ones 30% larger."""

@@ -7,6 +7,7 @@ from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -300,6 +301,16 @@ class VisualizationWidget(QWidget):
         self.boundaries_checkbox.setChecked(True)
         self.boundaries_checkbox.stateChanged.connect(self._update_show_boundaries)
 
+        kymograph_layers = self.tracks_viewer.kymograph_layers
+        self.link_width_box = self._make_scale_box(
+            "Thickness of the track lines, relative to the default",
+            kymograph_layers.set_link_width_scale,
+        )
+        self.point_size_box = self._make_scale_box(
+            "Size of the node markers, relative to the default",
+            kymograph_layers.set_point_size_scale,
+        )
+
         box = QGroupBox("Kymograph")
         box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         form = QFormLayout(box)
@@ -315,6 +326,22 @@ class VisualizationWidget(QWidget):
         form.addRow(self.paths_checkbox)
         form.addRow(self.branches_checkbox)
         form.addRow(self.boundaries_checkbox)
+        form.addRow("Line Width", self.link_width_box)
+        form.addRow("Marker Size", self.point_size_box)
+        return box
+
+    @staticmethod
+    def _make_scale_box(tooltip: str, apply) -> QDoubleSpinBox:
+        """A − value + box for a size factor, applied on every step so that holding a
+        button (or the arrow keys) resizes the kymograph as it changes."""
+        box = QDoubleSpinBox()
+        box.setRange(0.1, 10.0)
+        box.setSingleStep(0.1)
+        box.setDecimals(1)
+        box.setValue(1.0)
+        box.setSuffix(" ×")
+        box.setToolTip(tooltip)
+        box.valueChanged.connect(apply)
         return box
 
     def initialize_ortho_views(self, checked: bool):
@@ -498,6 +525,12 @@ class VisualizationWidget(QWidget):
         ):
             with QSignalBlocker(checkbox):
                 checkbox.setChecked(checked)
+        for scale_box, scale in (
+            (self.link_width_box, kymograph_layers.link_width_scale),
+            (self.point_size_box, kymograph_layers.point_size_scale),
+        ):
+            with QSignalBlocker(scale_box):
+                scale_box.setValue(scale)
 
         tracks = self.tracks_viewer.tracks
         can_show_kymograph = tracks is not None and tracks.ndim == 3

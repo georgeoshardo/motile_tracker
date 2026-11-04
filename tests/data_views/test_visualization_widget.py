@@ -488,3 +488,34 @@ class TestKymographControls:
 
         assert kymograph_layers.continuation_links_layer.visible is True
         assert kymograph_layers.branch_links_layer.visible is True
+
+    def test_line_width_and_marker_size_scale_the_kymograph(
+        self, visualization_widget_2d
+    ):
+        """The two size boxes resize the lines and markers as they change, and the
+        sizes are kept when the layers are rebuilt for another page."""
+        widget, tracks_viewer = visualization_widget_2d
+        widget.view_mode_widget.button_for_mode("kymograph").setChecked(True)
+        kymograph_layers = tracks_viewer.kymograph_layers
+        paths = kymograph_layers.continuation_links_layer
+        branches = kymograph_layers.branch_links_layer
+        points = kymograph_layers.points_layer
+        path_width = paths.edge_width[0]
+        branch_width = branches.edge_width[0]
+        point_size = points.size[0]
+
+        try:
+            widget.link_width_box.setValue(2.5)
+            widget.point_size_box.setValue(0.5)
+
+            assert np.allclose(paths.edge_width, 2.5 * path_width)
+            assert np.allclose(branches.edge_width, 2.5 * branch_width)
+            assert np.allclose(points.size, 0.5 * point_size)
+
+            widget.page_length_box.setValue(4)  # rebuilds the page
+            paths = kymograph_layers.continuation_links_layer
+            assert np.allclose(paths.edge_width, 2.5 * path_width)
+            assert np.allclose(kymograph_layers.points_layer.size, 0.5 * point_size)
+        finally:
+            widget.link_width_box.setValue(1.0)
+            widget.point_size_box.setValue(1.0)

@@ -76,6 +76,10 @@ class KymographLayerGroup:
         self.show_boundaries = True
         self.show_paths = True
         self.show_branches = True
+        # thickness of the track lines and size of the markers, relative to their
+        # defaults; kept when the layers are rebuilt (a new page or trench)
+        self.link_width_scale = 1.0
+        self.point_size_scale = 1.0
         self.geometry: KymographGeometry | None = None
         self.active = False
         self.detached_image_layer: napari.layers.Image | None = None
@@ -171,6 +175,19 @@ class KymographLayerGroup:
         self.show_branches = bool(show_branches)
         if self.branch_links_layer is not None:
             self.branch_links_layer.visible = self.show_branches
+
+    def set_link_width_scale(self, scale: float) -> None:
+        """Draw the track lines (paths and branches) ``scale`` times thicker."""
+        self.link_width_scale = float(scale)
+        for layer in (self.continuation_links_layer, self.branch_links_layer):
+            if layer is not None:
+                layer.set_width_scale(self.link_width_scale)
+
+    def set_point_size_scale(self, scale: float) -> None:
+        """Draw the node markers ``scale`` times larger."""
+        self.point_size_scale = float(scale)
+        if self.points_layer is not None:
+            self.points_layer.set_size_scale(self.point_size_scale)
 
     def available_image_layers(self) -> list[str]:
         layers = []
@@ -466,6 +483,7 @@ class KymographLayerGroup:
                 geometry=self.geometry,
                 page_start=self.page_start,
                 page_length=self.page_length,
+                size_scale=self.point_size_scale,
             )
             self.viewer.add_layer(self.points_layer)
         else:
@@ -511,9 +529,11 @@ class KymographLayerGroup:
                 tracks_viewer=self.tracks_viewer,
                 render_data=render_data,
                 edge_width=edge_width,
+                width_scale=self.link_width_scale,
             )
             self.viewer.add_layer(layer)
         else:
+            layer.width_scale = self.link_width_scale
             layer.update_render_data(render_data)
         layer.visible = visible
         return layer

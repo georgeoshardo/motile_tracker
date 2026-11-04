@@ -28,16 +28,19 @@ class KymographTrackLinks(Shapes):
         tracks_viewer: TracksViewer,
         render_data: KymographLinkRenderData,
         edge_width: float,
+        width_scale: float = 1.0,
     ):
         self.tracks_viewer = tracks_viewer
         self.default_edge_width = float(edge_width)
+        # set from the Visualization menu: the lines are drawn this many times thicker
+        self.width_scale = float(width_scale)
 
         super().__init__(
             data=render_data.segments,
             shape_type="line",
             name=name,
             edge_color=render_data.edge_colors or "white",
-            edge_width=self.default_edge_width,
+            edge_width=self.default_edge_width * self.width_scale,
             face_color="transparent",
             opacity=0.9,
             properties=render_data.properties,
@@ -63,8 +66,13 @@ class KymographTrackLinks(Shapes):
         self.data = render_data.segments
         self.properties = render_data.properties
         self.edge_color = render_data.edge_colors or "white"
-        self.edge_width = self.default_edge_width
+        self.edge_width = self.default_edge_width * self.width_scale
         self.refresh()
+
+    def set_width_scale(self, scale: float) -> None:
+        """Draw the lines ``scale`` times their default width."""
+        self.width_scale = float(scale)
+        self.edge_width = self.default_edge_width * self.width_scale
 
     def process_click(
         self,
