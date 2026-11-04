@@ -84,6 +84,8 @@ class KymographLayerGroup:
         self.active = False
         self.detached_image_layer: napari.layers.Image | None = None
         self.visible_nodes: list[int] | str = "all"
+        # the visible_nodes the track lines were last built for (see update_visible)
+        self._links_visible_nodes: list[int] | str | None = None
 
         self.background_layer: napari.layers.Image | None = None
         self._background_source: napari.layers.Image | None = None
@@ -554,6 +556,11 @@ class KymographLayerGroup:
             edge_width=1.0,
             visible=self.show_branches,
         )
+        self._links_visible_nodes = (
+            self.visible_nodes
+            if isinstance(self.visible_nodes, str)
+            else list(self.visible_nodes)
+        )
 
     def _refresh_boundaries(self) -> None:
         if self.geometry is None:
@@ -912,7 +919,11 @@ class KymographLayerGroup:
                 page_nodes = set(self._page_nodes())
                 visible = [node for node in visible_nodes if node in page_nodes]
             self.labels_layer.update_label_colormap(visible)
-        self._refresh_links()
+        # This runs on every selection change, but the lines only change when other
+        # nodes are shown: whatever else changes them (edits, colors, the page)
+        # rebuilds them through _refresh.
+        if visible_nodes != self._links_visible_nodes:
+            self._refresh_links()
 
     def center_view(self, node: int):
         if self.tracks is None or self.geometry is None:

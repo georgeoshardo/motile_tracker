@@ -804,6 +804,33 @@ class TestKymographMode:
         assert kymograph_layers.continuation_links_layer is None
         assert kymograph_layers.branch_links_layer is None
 
+    def test_selecting_a_node_only_rebuilds_the_links_when_others_are_shown(
+        self, viewer, solution_tracks_2d
+    ):
+        """A selection change refilters the visible nodes. In "all" mode that shows
+        the same nodes, so the track lines are left alone (rebuilding them took 0.3 s
+        a click on a real trench); in lineage mode another lineage is shown, so they
+        are rebuilt."""
+        tracks_viewer = TracksViewer.get_instance(viewer)
+        tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+        tracks_viewer.set_view_mode("kymograph")
+        kymograph_layers = tracks_viewer.kymograph_layers
+
+        with patch.object(
+            kymograph_layers,
+            "_refresh_links",
+            wraps=kymograph_layers._refresh_links,
+        ) as refresh_links:
+            tracks_viewer.selected_nodes.add(1)
+            tracks_viewer.selected_nodes.add(6)
+            assert refresh_links.call_count == 0
+
+            tracks_viewer.set_display_mode("lineage")
+            assert refresh_links.call_count == 1
+            tracks_viewer.selected_nodes.add(1)
+            assert refresh_links.call_count == 2
+        assert kymograph_layers.continuation_links_layer is not None
+
     def test_update_tracks_while_in_kymograph_mode_keeps_kymograph(
         self, viewer, solution_tracks_2d, graph_2d
     ):
