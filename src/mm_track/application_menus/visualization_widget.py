@@ -1,8 +1,10 @@
 import napari
+import numpy as np
 from psygnal import Signal
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -129,9 +131,104 @@ class VisualizationWidget(QWidget):
         main_layout.setSpacing(6)
         main_layout.addWidget(self.kymograph_box, 0, Qt.AlignTop)
         main_layout.addWidget(self.opacity_box, 0, Qt.AlignTop)
+        self.mask_color_box = self._make_mask_color_box()
+        main_layout.addWidget(self.mask_color_box, 0, Qt.AlignTop)
         main_layout.addStretch(1)
 
         self._update_widget_availability()
+
+    # Diverging maps first (for properties with a sign), then sequential ones.
+    MASK_COLORMAPS = ("PRGn", "PiYG", "coolwarm", "inferno", "inferno_r", "turbo", "viridis")
+
+    def _make_mask_color_box(self) -> QGroupBox:
+        """Colour the masks by track (default) or by a numeric node property."""
+        self.mask_feature_box = QComboBox()
+        self.mask_feature_box.setToolTip(
+            "Colour each mask by this node property instead of its track. Masks without "
+            "a value are grey."
+        )
+        self.mask_colormap_box = QComboBox()
+        self.mask_colormap_box.addItems(self.MASK_COLORMAPS)
+        self.mask_low_box = QDoubleSpinBox()
+        self.mask_high_box = QDoubleSpinBox()
+        for box in (self.mask_low_box, self.mask_high_box):
+            box.setRange(-1e9, 1e9)
+            box.setDecimals(2)
+            box.setKeyboardTracking(False)
+        self.mask_feature_box.currentTextChanged.connect(self._on_mask_feature)
+        self.mask_colormap_box.currentTextChanged.connect(self._apply_mask_color)
+        self.mask_low_box.valueChanged.connect(self._apply_mask_color)
+        self.mask_high_box.valueChanged.connect(self._apply_mask_color)
+
+        range_row = QHBoxLayout()
+        range_row.addWidget(self.mask_low_box)
+        range_row.addWidget(self.mask_high_box)
+        form = QFormLayout()
+        form.addRow("Property", self.mask_feature_box)
+        form.addRow("Colormap", self.mask_colormap_box)
+        form.addRow("Range", range_row)
+        box = QGroupBox("Colour masks by")
+        box.setLayout(form)
+        return box
+
+    def _refresh_mask_features(self) -> None:
+        features = ["Track", *self.tracks_viewer.numeric_node_features()]
+        setting = self.tracks_viewer.mask_color_by
+        current = setting["feature"] if setting else "Track"
+        with QSignalBlocker(self.mask_feature_box):
+            self.mask_feature_box.clear()
+            self.mask_feature_box.addItems(features)
+            self.mask_feature_box.setCurrentText(current if current in features else "Track")
+        if setting and current in features:  # show a setting made elsewhere (e.g. at launch)
+            with (QSignalBlocker(self.mask_low_box), QSignalBlocker(self.mask_high_box),
+                  QSignalBlocker(self.mask_colormap_box)):
+                self.mask_low_box.setValue(setting["range"][0])
+                self.mask_high_box.setValue(setting["range"][1])
+                if self.mask_colormap_box.findText(setting["colormap"]) < 0:
+                    self.mask_colormap_box.addItem(setting["colormap"])
+                self.mask_colormap_box.setCurrentText(setting["colormap"])
+        if setting and current not in features:  # the property went with the data
+            self.tracks_viewer.set_mask_color_by(None)
+        self._update_mask_controls()
+
+    def _update_mask_controls(self) -> None:
+        by_feature = self.mask_feature_box.currentText() not in ("", "Track")
+        for widget in (self.mask_colormap_box, self.mask_low_box, self.mask_high_box):
+            widget.setEnabled(by_feature)
+
+    def _on_mask_feature(self, feature: str) -> None:
+        """A newly chosen property starts on its 5th-95th percentile range (symmetric
+        around 0 when it has values on both sides)."""
+        if feature not in ("", "Track") and self.tracks_viewer.tracks is not None:
+            _, values = self.tracks_viewer.node_feature_values(feature)
+            values = values[np.isfinite(values)]
+            if values.size:
+                low, high = (float(v) for v in np.percentile(values, [5, 95]))
+                if low < 0 < high:
+                    low, high = -max(-low, high), max(-low, high)
+                if high <= low:
+                    high = low + 1
+                with QSignalBlocker(self.mask_low_box), QSignalBlocker(self.mask_high_box):
+                    self.mask_low_box.setValue(low)
+                    self.mask_high_box.setValue(high)
+        self._update_mask_controls()
+        self._apply_mask_color()
+
+    def _apply_mask_color(self, *_args) -> None:
+        feature = self.mask_feature_box.currentText()
+        if self.tracks_viewer.tracks is None:
+            return
+        setting = (
+            None
+            if feature in ("", "Track")
+            else {
+                "feature": feature,
+                "range": (self.mask_low_box.value(), self.mask_high_box.value()),
+                "colormap": self.mask_colormap_box.currentText(),
+            }
+        )
+        if setting != self.tracks_viewer.mask_color_by:
+            self.tracks_viewer.set_mask_color_by(setting)
 
     def _make_kymograph_box(self) -> QGroupBox:
         """Create the group box with the kymograph paging and link controls."""
@@ -252,9 +349,11 @@ class VisualizationWidget(QWidget):
         mode = self.tracks_viewer.mode
 
         self._update_kymograph_controls()
+        self._refresh_mask_features()
 
         seg_layer = self.tracks_viewer.tracking_layers.seg_layer
         self.opacity_box.setVisible(seg_layer is not None)
+        self.mask_color_box.setVisible(seg_layer is not None)
         if seg_layer is not None:
             self.highlight_widget.setVisible(True)
             self.foreground_widget.setVisible(True)

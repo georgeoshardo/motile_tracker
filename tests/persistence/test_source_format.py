@@ -30,7 +30,10 @@ import pytest
 import zarr
 from funtracks.user_actions import UserAddEdge, UserDeleteEdge, UserDeleteNode
 
-from mm_track.import_export.geff_collection import load_geff_group
+from mm_track.import_export.geff_collection import (
+    load_geff_group,
+    node_name_map_from_metadata,
+)
 from mm_track.persistence import release
 from mm_track.persistence import source_format as sf
 from mm_track.persistence.paths import create_session
@@ -521,6 +524,29 @@ def test_a_failed_first_save_undoes_the_edit(valid_archive, tmp_path, monkeypatc
     assert "disk is full" in session.error
     assert not has_history(valid_archive)
     session.close()
+
+
+def test_only_properties_with_one_value_per_node_become_features(
+    tmp_path, zarr_format
+):
+    """A raw export's ``weight`` (one number per node) is kept as a node feature, so
+    it can colour the masks; its ``coords`` (a row per node) is not: as a feature it
+    has no value for a node an edit adds, and saving that edit fails."""
+    from geff import GeffMetadata
+
+    store = tmp_path / "raw.zarr"
+    store.mkdir()
+    (store / "zarr.json").write_text(
+        json.dumps({"attributes": {}, "zarr_format": 3, "node_type": "group"}, indent=2)
+    )
+    geff = write_trench(
+        store / "trench_a", break_tracklet=False, raw=True, zarr_format=zarr_format
+    )
+
+    name_map = node_name_map_from_metadata(GeffMetadata.read(geff), "label", geff)
+
+    assert name_map["weight"] == "weight"
+    assert "coords" not in name_map
 
 
 def test_split_gives_a_new_id_and_the_lowest_free_label(archive, tmp_path):

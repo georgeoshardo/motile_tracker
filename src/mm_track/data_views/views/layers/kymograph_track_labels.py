@@ -114,6 +114,7 @@ class KymographTrackLabels(TrackLabels):
             page_length=self.page_length,
         )
         self.colormap = self._get_colormap()
+        self.update_feature_readout()
         self.refresh()
 
     def _ensure_valid_label_for_time(self, current_timepoint: int) -> None:

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import zarr
 from funtracks.import_export import import_from_geff
 from geff import GeffMetadata
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     import napari
-    import numpy as np
     from funtracks.data_model import Tracks
 
 logger = logging.getLogger(__name__)
@@ -230,15 +230,27 @@ def read_related_arrays(
     )
 
 
+# funtracks' own node keys: a geff property with one of these names is only taken
+# through the mapping above (or not at all, like tracklet ids), never as an extra.
+_FUNTRACKS_KEYS = frozenset({
+    "t", "time", "pos", "node_id", "seg_id", "track_id", "tracklet_id", "lineage_id",
+    "mask", "bbox", "solution", "area",
+})
+
+
 def node_name_map_from_metadata(
-    metadata: GeffMetadata, label_prop: str | None = None
+    metadata: GeffMetadata,
+    label_prop: str | None = None,
+    geff_path: Path | None = None,
 ) -> dict[str, str | list[str]]:
     """Map funtracks' standard node keys to this geff's property names.
 
     Uses the typed ``axes`` (time / space) for ``time`` and ``pos``, the
     ``track_node_props`` lineage for ``lineage_id``, and the labels'
     ``label_prop`` for ``seg_id``. Tracklets are left to funtracks. Only properties that exist in the geff are
-    mapped, so funtracks can fall back to its own inference for the rest.
+    mapped, so funtracks can fall back to its own inference for the rest. Given the
+    geff's path, any other numeric node property with one value per node is kept
+    under its own name.
     """
     props = set(metadata.node_props_metadata or {})
     axes = metadata.axes or []
@@ -261,7 +273,39 @@ def node_name_map_from_metadata(
 
     if label_prop in props:
         name_map["seg_id"] = label_prop
+
+    # Keep the geff's other numeric scalar node properties (scores and the like) as
+    # node features under their own names, so they can colour the masks; funtracks
+    # drops properties that are not in the map.
+    used = {v for value in name_map.values()
+            for v in (value if isinstance(value, list) else [value])}
+    for prop, meta in (metadata.node_props_metadata or {}).items():
+        if (prop in used or prop in name_map or prop in _FUNTRACKS_KEYS
+                or prop == track_props.get("tracklet")):
+            continue
+        if getattr(meta, "varlength", False):
+            continue
+        try:
+            numeric = np.issubdtype(np.dtype(meta.dtype), np.number)
+        except TypeError:
+            numeric = False
+        if numeric and geff_path is not None and _is_scalar_prop(geff_path, prop):
+            name_map[prop] = prop
     return name_map
+
+
+def _is_scalar_prop(geff_path: Path, prop: str) -> bool:
+    """Whether a geff node property holds one value per node.
+
+    The metadata does not say: a property such as ``coords`` (one row of numbers per
+    node) has a numeric dtype too. Kept as a node feature, a vector property breaks
+    saving as soon as an edit adds a node, which has no value for it.
+    """
+    try:
+        values = zarr.open_array(Path(geff_path) / "nodes" / "props" / prop / "values", mode="r")
+    except (FileNotFoundError, KeyError, ValueError, zarr.errors.BaseZarrError):
+        return False
+    return values.ndim == 1
 
 
 def open_array(path: Path) -> np.ndarray | zarr.Array:
@@ -304,7 +348,9 @@ def load_geff_group(
                 session.flush()
             metadata = GeffMetadata.read(geff_path)
             related = read_related_arrays(geff_path, metadata)
-            name_map = node_name_map_from_metadata(metadata, related.label_prop)
+            name_map = node_name_map_from_metadata(
+                metadata, related.label_prop, geff_path
+            )
             tracks = (
                 session.tracks
                 if session is not None

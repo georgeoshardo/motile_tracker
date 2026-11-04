@@ -99,6 +99,7 @@ class TrackLabels(ContourLabels):
         )
 
         self.viewer = viewer
+        self.update_feature_readout()
         self.highlight_opacity = 1
         self.foreground_opacity = 0.6
         self.background_opacity = 0.3
@@ -190,6 +191,9 @@ class TrackLabels(ContourLabels):
             DirectLabelColormap: A map from node ids to colors based on track id
         """
         tracks = self.tracks_viewer.tracks
+        setting = self.tracks_viewer.mask_color_by
+        if tracks is not None and setting is not None:
+            return self._feature_colormap(setting)
         if tracks is not None:
             nodes = tracks.graph.node_ids()
             track_ids = tracks.get_track_ids(nodes)
@@ -210,6 +214,37 @@ class TrackLabels(ContourLabels):
         return DirectLabelColormap(
             color_dict={
                 **dict(zip(nodes, colors, strict=True)),
+                None: [0, 0, 0, 0],
+            }
+        )
+
+    def update_feature_readout(self) -> None:
+        """Show the colouring property's value of the mask under the cursor in the
+        status bar (napari reads it from the layer's features, keyed by label)."""
+        setting = self.tracks_viewer.mask_color_by
+        if setting is None or self.tracks_viewer.tracks is None:
+            self.features = {}
+            return
+        nodes, values = self.tracks_viewer.node_feature_values(setting["feature"])
+        self.features = {"index": nodes, setting["feature"]: np.round(values, 2)}
+
+    def _feature_colormap(self, setting: dict) -> DirectLabelColormap:
+        """Colour each node's mask by its value of ``setting["feature"]``, scaled to
+        ``setting["range"]`` through ``setting["colormap"]``; missing values are grey."""
+        nodes, values = self.tracks_viewer.node_feature_values(setting["feature"])
+        low, high = setting["range"]
+        scaled = np.clip((values - low) / max(high - low, 1e-12), 0, 1)
+        cmap = napari.utils.colormaps.ensure_colormap(setting["colormap"])
+        mapped = (
+            cmap.map(np.nan_to_num(scaled)) if len(nodes) else np.zeros((0, 4), np.float32)
+        )
+        colors = [
+            np.array([0.55, 0.55, 0.55, 1.0], np.float32) if np.isnan(v) else c.copy()
+            for v, c in zip(values, mapped, strict=True)
+        ]
+        return DirectLabelColormap(
+            color_dict={
+                **dict(zip(nodes.tolist(), colors, strict=True)),
                 None: [0, 0, 0, 0],
             }
         )
@@ -347,6 +382,7 @@ class TrackLabels(ContourLabels):
         """Refresh the data in the labels layer"""
         self.data = self.tracks_viewer.tracks.segmentation
         self.colormap = self._get_colormap()
+        self.update_feature_readout()
         self.refresh()
 
     def update_label_colormap(self, visible: list[int] | str) -> None:

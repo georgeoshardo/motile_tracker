@@ -111,6 +111,11 @@ class TracksViewer:
             background_value=0,
         )
 
+        # Colour masks by a numeric node property instead of their track:
+        # {"feature": name, "range": (low, high), "colormap": napari colormap name},
+        # or None for track colours (see set_mask_color_by).
+        self.mask_color_by: dict | None = None
+
         self.symbolmap: dict[NodeType, str] = {
             NodeType.END: "x",
             NodeType.CONTINUE: "disc",
@@ -754,6 +759,45 @@ class TracksViewer:
             yield
         finally:
             self._selection_updates_set_view = previous
+
+    def node_feature_values(self, feature: str) -> tuple[np.ndarray, np.ndarray]:
+        """Node ids and their values of a node property (NaN where it is missing)."""
+        attrs = self.tracks.graph.node_attrs(attr_keys=["node_id", feature])
+        nodes = np.asarray(attrs["node_id"].to_numpy())
+        values = np.asarray(
+            [np.nan if v is None else v for v in attrs[feature].to_list()], dtype=float
+        )
+        return nodes, values
+
+    def numeric_node_features(self) -> list[str]:
+        """Node properties that can colour the masks: numeric scalars that are not
+        positions, ids or masks (for example scores carried in from the geff)."""
+        if self.tracks is None:
+            return []
+        skip = {"t", "time", "node_id", "pos", "mask", "bbox", "solution", "seg_id",
+                "track_id", "tracklet_id", "lineage_id"}
+        attrs = self.tracks.graph.node_attrs(attr_keys=None)
+        names = []
+        for name in attrs.columns:
+            if name in skip:
+                continue
+            try:
+                np.asarray(attrs[name].to_numpy()[:1], dtype=float)
+            except (TypeError, ValueError):
+                continue
+            if attrs[name].to_numpy().ndim == 1:
+                names.append(name)
+        return names
+
+    def set_mask_color_by(self, setting: dict | None) -> None:
+        """Colour the masks by a node property (see ``mask_color_by``), or by track
+        when ``setting`` is None; nodes without a value are drawn grey."""
+        self.mask_color_by = setting
+        for layer in (self.tracking_layers.seg_layer, self.kymograph_layers.labels_layer):
+            if layer is not None:
+                layer.colormap = layer._get_colormap()
+                layer.update_feature_readout()
+        self.update_selection(set_view=False)
 
     def update_selection(
         self, set_view: bool | None = None, update_counts: bool = False
