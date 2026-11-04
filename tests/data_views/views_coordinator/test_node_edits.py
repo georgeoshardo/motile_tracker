@@ -525,3 +525,388 @@ class TestEditsKeepTheView:
         tracks_viewer.undo()
         assert_view_unchanged()
         tracks_viewer.set_view_mode("spatial")
+
+
+class TestCut:
+    """Cutting a node into the pieces an alternative segmentation offers."""
+
+    def test_merge_then_cut_restores_the_division(self, tracks_viewer_setup):
+        _, _, tracks = tracks_viewer_setup
+        from mm_track.data_views.views_coordinator.node_edits import CutNode, plan_cut
+
+        mask_2, mask_3 = node_mask(tracks, 2), node_mask(tracks, 3)
+        MergeNodes(tracks, [2, 3], keep=3)
+        assert [int(c) for c in tracks.successors(1)] == [3]
+
+        plan = plan_cut(tracks, 3, [mask_2, mask_3])
+        # piece 2 lies on parent 1: it keeps the label; the other is the second daughter
+        assert plan.keep_index == 1
+        assert plan.parents == [1, 1]
+        assert plan.children == [[], [4]]
+        action = CutNode(tracks, plan)
+
+        new = action.new_nodes[0]
+        frame = np.asarray(tracks.segmentation[1])
+        assert np.array_equal(frame == new, mask_2)
+        assert np.array_equal(frame == 3, mask_3)
+        assert {int(c) for c in tracks.successors(1)} == {3, new}
+        assert [int(p) for p in tracks.predecessors(4)] == [3]
+
+    def test_a_piece_continues_a_neighbour_whose_track_ended(self, tracks_viewer_setup):
+        _, _, tracks = tracks_viewer_setup
+        from funtracks.user_actions import UserUpdateSegmentation
+
+        from mm_track.data_views.views_coordinator.node_edits import (
+            CutNode,
+            mask_pixels,
+            plan_cut,
+        )
+
+        # grow node 4 (t2, child of 3) over where nodes 2 and 3 were at t1: node 2's
+        # track ends there, so the upper piece continues it
+        big = np.zeros((100, 100), dtype=bool)
+        big[0:76, 0:91] = True
+        UserUpdateSegmentation(
+            tracks, new_value=4, updated_pixels=[(mask_pixels(big & ~node_mask(tracks, 4), 2), 0)],
+            current_track_id=int(tracks.get_track_id(4)),
+        )
+        before = _snapshot(tracks)
+        mask = node_mask(tracks, 4)
+        upper, lower = mask.copy(), mask.copy()
+        upper[38:] = False
+        lower[:38] = False
+
+        plan = plan_cut(tracks, 4, [upper, lower])
+        assert plan.keep_index == 1  # the lower piece lies on parent 3
+        assert plan.parents == [2, 3]
+        action = CutNode(tracks, plan)
+
+        new = action.new_nodes[0]
+        assert [int(p) for p in tracks.predecessors(new)] == [2]
+        assert tracks.get_track_id(new) == tracks.get_track_id(2)
+        assert [int(p) for p in tracks.predecessors(4)] == [3]
+        tracks.undo()
+        assert _snapshot(tracks) == before
+
+    def test_three_pieces_and_a_note_for_the_one_without_a_cell(self, tracks_viewer_setup):
+        _, _, tracks = tracks_viewer_setup
+        from mm_track.data_views.views_coordinator.node_edits import CutNode, plan_cut
+
+        # node 3's parent 1 already has two children: nothing is left for the others
+        mask = node_mask(tracks, 3)
+        rows = np.nonzero(mask)[0]
+        pieces = [mask & (np.arange(100)[:, None] < rows.min() + 10),
+                  mask & (np.arange(100)[:, None] >= rows.min() + 10) & (np.arange(100)[:, None] < rows.min() + 20),
+                  mask & (np.arange(100)[:, None] >= rows.min() + 20)]
+        plan = plan_cut(tracks, 3, pieces)
+
+        assert plan.parents[plan.keep_index] == 1
+        assert sum(p is None for p in plan.parents) == 2
+        assert len(plan.notes) == 2
+        action = CutNode(tracks, plan)
+        assert len(action.new_nodes) == 2
+        frame = np.asarray(tracks.segmentation[1])
+        assert np.array_equal(np.isin(frame, [3, *action.new_nodes]), mask)
+
+    def test_a_piece_without_a_child_is_continued_by_a_track_starting_next(
+        self, tracks_viewer_setup
+    ):
+        _, _, tracks = tracks_viewer_setup
+        from funtracks.user_actions import UserDeleteEdge, UserUpdateSegmentation
+
+        from mm_track.data_views.views_coordinator.node_edits import (
+            CutNode,
+            mask_pixels,
+            plan_cut,
+        )
+
+        # node 4 (t2) starts a track of its own under the lower half of node 3 (t1)
+        UserDeleteEdge(tracks, (3, 4))
+        upper, lower = _halves(node_mask(tracks, 3))
+        UserUpdateSegmentation(
+            tracks, new_value=4, updated_pixels=[(mask_pixels(lower & ~node_mask(tracks, 4), 2), 0)],
+            current_track_id=int(tracks.get_track_id(4)),
+        )
+        assert len(tracks.predecessors(4)) == 0
+
+        plan = plan_cut(tracks, 3, [upper, lower])
+        assert plan.adopted[1] == [4] and plan.adopted[0] == []
+        action = CutNode(tracks, plan)
+
+        lower_label = 3 if plan.keep_index == 1 else action.new_nodes[0]
+        assert [int(p) for p in tracks.predecessors(4)] == [lower_label]
+        tracks.undo()
+        assert len(tracks.predecessors(4)) == 0
+
+    def test_pieces_must_be_exactly_the_mask(self, tracks_viewer_setup):
+        _, _, tracks = tracks_viewer_setup
+        from funtracks.exceptions import InvalidActionError
+
+        from mm_track.data_views.views_coordinator.node_edits import CutNode, plan_cut
+
+        upper, lower = _halves(node_mask(tracks, 3))
+        lower[np.nonzero(lower)[0].max()] = False  # a row of the mask is left out
+        plan = plan_cut(tracks, 3, [upper, lower])
+        with pytest.raises(InvalidActionError):
+            CutNode(tracks, plan)
+
+
+class TestCutFromHypotheses:
+    """Shift+C: the cut an alternative segmentation offers, previewed, then applied."""
+
+    @staticmethod
+    def _hypotheses(tracks):
+        upper, lower = _halves(node_mask(tracks, 3))
+        labels = np.zeros((100, 100), dtype=np.int32)
+        labels[upper], labels[lower] = 1, 2
+        return lambda time: {"h1": labels, "h2": labels} if time == 1 else {}
+
+    def test_keybindings(self):
+        assert KEYMAP["cut_from_hypotheses"] == ["Shift-C"]
+        assert KEYMAP["apply_cut_preview"] == ["Enter"]
+
+    def test_preview_then_apply_in_one_undo_step(self, tracks_viewer_setup, click_node):
+        viewer, tracks_viewer, tracks = tracks_viewer_setup
+        tracks_viewer.set_cut_hypotheses(tracks, self._hypotheses(tracks))
+        before = _snapshot(tracks)
+        mask = node_mask(tracks, 3)
+        click_node(tracks_viewer, 3)
+        active = viewer.layers.selection.active
+
+        tracks_viewer.cut_from_hypotheses()
+
+        preview = tracks_viewer.cut_preview
+        assert preview.active and preview.node == 3
+        assert preview.current.hypotheses == ("h1", "h2")
+        assert preview.layer in viewer.layers
+        assert viewer.layers.selection.active is active  # the user's layer stays active
+        assert _snapshot(tracks) == before  # nothing changed yet
+        assert "Enter: apply" in preview.message()
+
+        tracks_viewer.cut_from_hypotheses()  # one candidate: it stays shown
+        assert preview.index == 0
+
+        tracks_viewer.apply_cut_preview()
+        assert not preview.active and preview.layer is None
+        nodes = sorted(int(n) for n in tracks.graph.node_ids())
+        new = [n for n in nodes if n not in before[0]]
+        assert len(new) == 1
+        frame = np.asarray(tracks.segmentation[1])
+        assert np.array_equal((frame == 3) | (frame == new[0]), mask)
+        assert set(tracks_viewer.selected_nodes.as_list) == {3, new[0]}
+
+        tracks_viewer.undo()
+        assert _snapshot(tracks) == before
+
+    def test_escape_another_node_or_an_edit_drops_the_preview(
+        self, tracks_viewer_setup, click_node
+    ):
+        viewer, tracks_viewer, tracks = tracks_viewer_setup
+        tracks_viewer.set_cut_hypotheses(tracks, self._hypotheses(tracks))
+        preview = tracks_viewer.cut_preview
+
+        click_node(tracks_viewer, 3)
+        tracks_viewer.cut_from_hypotheses()
+        tracks_viewer.deselect()  # Esc: the preview goes, the selection stays
+        assert not preview.active and preview.layer is None
+        assert tracks_viewer.selected_nodes.as_list == [3]
+
+        tracks_viewer.cut_from_hypotheses()
+        click_node(tracks_viewer, 2)
+        assert not preview.active
+
+        click_node(tracks_viewer, 3)
+        tracks_viewer.cut_from_hypotheses()
+        tracks_viewer.delete_node()  # an edit
+        assert not preview.active
+        assert all(layer.name != "cut preview" for layer in viewer.layers)
+
+    def test_no_hypotheses_or_hypotheses_of_other_tracks(
+        self, tracks_viewer_setup, click_node
+    ):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        click_node(tracks_viewer, 3)
+        warn = "mm_track.data_views.views_coordinator.tracks_viewer.show_warning"
+        with patch(warn) as warning:
+            tracks_viewer.cut_from_hypotheses()
+        warning.assert_called_once()
+
+        tracks_viewer.set_cut_hypotheses(object(), self._hypotheses(tracks))
+        with patch(warn) as warning:
+            tracks_viewer.cut_from_hypotheses()
+        warning.assert_called_once()
+        assert not tracks_viewer.cut_preview.active
+
+    def test_a_mask_no_hypothesis_cuts(self, tracks_viewer_setup, click_node):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        whole = np.zeros((100, 100), dtype=np.int32)
+        whole[node_mask(tracks, 3)] = 1
+        tracks_viewer.set_cut_hypotheses(tracks, lambda time: {"same": whole})
+        click_node(tracks_viewer, 3)
+        with patch("mm_track.data_views.views_coordinator.tracks_viewer.show_info") as info:
+            tracks_viewer.cut_from_hypotheses()
+        assert "c cuts a mask from the image" in info.call_args[0][0]
+        assert not tracks_viewer.cut_preview.active
+
+
+class TestCutManyFromHypotheses:
+    """Shift+C on several selected nodes: in one frame, or a stretch of frames."""
+
+    @staticmethod
+    def _grow_node_4(tracks):
+        """Node 4 (t2, child of 3) grown over where nodes 2 and 3 are at t1."""
+        from funtracks.user_actions import UserUpdateSegmentation
+
+        from mm_track.data_views.views_coordinator.node_edits import mask_pixels
+
+        big = np.zeros((100, 100), dtype=bool)
+        big[0:76, 0:91] = True
+        UserUpdateSegmentation(
+            tracks, new_value=4,
+            updated_pixels=[(mask_pixels(big & ~node_mask(tracks, 4), 2), 0)],
+            current_track_id=int(tracks.get_track_id(4)),
+        )
+
+    @staticmethod
+    def _halves_labels(*masks):
+        labels = np.zeros((100, 100), dtype=np.int32)
+        for k, mask in enumerate(masks):
+            upper, lower = _halves(mask)
+            labels[upper], labels[lower] = 2 * k + 1, 2 * k + 2
+        return labels
+
+    def test_nodes_of_one_frame_are_cut_together_in_one_undo_step(
+        self, tracks_viewer_setup, click_node
+    ):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        labels = self._halves_labels(node_mask(tracks, 2), node_mask(tracks, 3))
+        tracks_viewer.set_cut_hypotheses(tracks, lambda t: {"h": labels} if t == 1 else {})
+        before = _snapshot(tracks)
+        click_node(tracks_viewer, 2)
+        click_node(tracks_viewer, 3, append=True)
+
+        tracks_viewer.cut_from_hypotheses()
+        preview = tracks_viewer.cut_preview
+        assert [p.node for p in preview.proposals] == [2, 3]
+        assert "Cuts for 2 of 2 selected nodes (t1)" in preview.message()
+        tracks_viewer.apply_cut_preview()
+
+        nodes = sorted(int(n) for n in tracks.graph.node_ids())
+        assert len(nodes) == len(before[0]) + 2
+        assert len(tracks_viewer.selected_nodes) == 4
+        tracks_viewer.undo()
+        assert _snapshot(tracks) == before
+
+    def test_a_stretch_of_frames_links_up(self, tracks_viewer_setup, click_node):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        self._grow_node_4(tracks)
+        mask_3, mask_4 = node_mask(tracks, 3), node_mask(tracks, 4)
+        # t1: node 3 in halves; t2: node 4 cut where node 2 ends and node 3 begins
+        upper_4 = mask_4 & (np.arange(100)[:, None] < 38)
+        labels_2 = np.zeros((100, 100), dtype=np.int32)
+        labels_2[upper_4], labels_2[mask_4 & ~upper_4] = 1, 2
+        labels = {1: self._halves_labels(mask_3), 2: labels_2}
+        tracks_viewer.set_cut_hypotheses(tracks, lambda t: {"h": labels[t]} if t in labels else {})
+        before = _snapshot(tracks)
+        click_node(tracks_viewer, 4)  # selection order does not matter
+        click_node(tracks_viewer, 3, append=True)
+
+        tracks_viewer.cut_from_hypotheses()
+        assert [p.time for p in tracks_viewer.cut_preview.proposals] == [1, 2]
+        tracks_viewer.apply_cut_preview()
+
+        frame = np.asarray(tracks.segmentation[2])
+        pieces_t2 = [int(v) for v in np.unique(frame[mask_4]) if v]
+        assert len(pieces_t2) == 2
+        # every piece at t2 continues a cell at t1: node 2 (whose track ended) or a
+        # piece of node 3
+        parents = {int(p) for n in pieces_t2 for p in tracks.predecessors(n)}
+        assert 2 in parents and len(parents) == 2
+        assert all(int(tracks.get_time(p)) == 1 for p in parents)
+        tracks_viewer.undo()
+        assert _snapshot(tracks) == before
+
+    def test_nodes_no_hypothesis_cuts_are_skipped_and_named(
+        self, tracks_viewer_setup, click_node
+    ):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        labels = self._halves_labels(node_mask(tracks, 3))
+        tracks_viewer.set_cut_hypotheses(tracks, lambda t: {"h": labels} if t == 1 else {"h": labels * 0})
+        click_node(tracks_viewer, 3)
+        click_node(tracks_viewer, 6, append=True)
+
+        tracks_viewer.cut_from_hypotheses()
+        preview = tracks_viewer.cut_preview
+        assert [p.node for p in preview.proposals] == [3]
+        assert preview.skipped == [6]
+        assert "none for 6" in preview.message()
+        # selecting only some of the nodes drops the preview
+        click_node(tracks_viewer, 3)
+        assert not preview.active
+
+    def test_shift_c_again_steps_the_nodes_with_several_cuts(
+        self, tracks_viewer_setup, click_node
+    ):
+        _, tracks_viewer, tracks = tracks_viewer_setup
+        mask_2, mask_3 = node_mask(tracks, 2), node_mask(tracks, 3)
+        halves = self._halves_labels(mask_2, mask_3)
+        thirds = np.zeros((100, 100), dtype=np.int32)  # another cut of node 3 only
+        rows = np.arange(100)[:, None]
+        top = np.nonzero(mask_3)[0].min()
+        thirds[mask_3 & (rows < top + 10)], thirds[mask_3 & (rows >= top + 10)] = 1, 2
+        tracks_viewer.set_cut_hypotheses(
+            tracks, lambda t: {"a": halves, "b": thirds} if t == 1 else {}
+        )
+        click_node(tracks_viewer, 2)
+        click_node(tracks_viewer, 3, append=True)
+
+        tracks_viewer.cut_from_hypotheses()
+        preview = tracks_viewer.cut_preview
+        assert [len(p.cuts) for p in preview.proposals] == [1, 2]
+        assert "(1 have others)" in preview.message()
+        tracks_viewer.cut_from_hypotheses()
+        assert [p.index for p in preview.proposals] == [0, 1]
+        tracks_viewer.cut_from_hypotheses()
+        assert [p.index for p in preview.proposals] == [0, 0]
+
+
+def test_a_stretch_is_not_ranked_against_its_own_merged_masks(viewer, solution_tracks_2d):
+    """In a selected stretch, the frame after still holds the wrong merged mask: it
+    must not make the cut look worse than leaving the mask whole."""
+    from funtracks.user_actions import UserUpdateSegmentation
+
+    from mm_track.data_views.views_coordinator.node_edits import mask_pixels
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.update_tracks(tracks=solution_tracks_2d, name="test")
+    tracks = tracks_viewer.tracks
+    # node 4 (t2) becomes the same mask as node 3 (t1): one merged cell over two frames
+    same = node_mask(tracks, 3)
+    UserUpdateSegmentation(
+        tracks, new_value=4, updated_pixels=[(mask_pixels(same & ~node_mask(tracks, 4), 2), 0)],
+        current_track_id=int(tracks.get_track_id(4)),
+    )
+    UserUpdateSegmentation(
+        tracks, new_value=0, updated_pixels=[(mask_pixels(node_mask(tracks, 4) & ~same, 2), 4)],
+        current_track_id=int(tracks.get_track_id(4)),
+    )
+    upper, lower = _halves(same)
+    labels = np.zeros((100, 100), dtype=np.int32)
+    labels[upper], labels[lower] = 1, 2
+    tracks_viewer.set_cut_hypotheses(tracks, lambda t: {"h": labels})
+
+    tracks_viewer.selected_nodes.add(3)
+    tracks_viewer.cut_from_hypotheses()
+    alone = tracks_viewer.cut_preview.proposals[0]
+    # alone, the identical merged mask at t2 makes the whole mask fit perfectly
+    assert alone.uncut > 0.99
+    tracks_viewer.cut_preview.clear()
+
+    tracks_viewer.selected_nodes.add_list([3, 4])
+    tracks_viewer.cut_from_hypotheses()
+    first = tracks_viewer.cut_preview.proposals[0]
+    assert first.node == 3
+    # selected with it, node 4 is not a neighbour to fit: only the frame before counts
+    assert first.uncut < 0.5
+    assert first.current.frame == "before"
+    viewer.layers.clear()

@@ -24,7 +24,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from mm_track.data_views.keybindings_config import GENERAL_KEY_ACTIONS
+from mm_track.data_views.keybindings_config import general_key_action
 from mm_track.data_views.views.layers.click_utils import (
     detect_side_button,
 )
@@ -269,7 +269,7 @@ class CustomTableWidget(QTableView):
         tracks_viewer = parent.tracks_viewer
 
         # Get the action name from the general keybind mapping
-        action_name = GENERAL_KEY_ACTIONS.get(event.key())
+        action_name = general_key_action(event)
         if action_name:
             method = getattr(tracks_viewer, action_name, None)
             if method:

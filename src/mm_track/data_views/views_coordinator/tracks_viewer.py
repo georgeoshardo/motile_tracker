@@ -38,10 +38,19 @@ from mm_track.data_views.views.tree_view.tree_widget_utils import (
 from mm_track.data_views.views_coordinator.groups import (
     CollectionWidget,
 )
+from mm_track.data_views.views_coordinator.cut_preview import CutPreview, Proposal
+from mm_track.data_views.views_coordinator.hypothesis_cut import (
+    best_continuity,
+    cut_candidates,
+    neighbourhood,
+    with_pieces,
+)
 from mm_track.data_views.views_coordinator.node_edits import (
+    CutNodes,
     MergeNodesOverTime,
     SplitNode,
     can_merge,
+    node_mask,
     propose_split,
 )
 from mm_track.data_views.views_coordinator.node_selection_history import (
@@ -116,6 +125,11 @@ class TracksViewer:
         # or None for track colours (see set_mask_color_by).
         self.mask_color_by: dict | None = None
 
+        # Alternative segmentations of some tracks' images, for Shift+C (see
+        # set_cut_hypotheses); mm-track itself has none.
+        self._cut_hypotheses: tuple[SolutionTracks, object] | None = None
+        self.cut_preview = CutPreview(self)
+
         self.symbolmap: dict[NodeType, str] = {
             NodeType.END: "x",
             NodeType.CONTINUE: "disc",
@@ -163,6 +177,11 @@ class TracksViewer:
         self.set_keybinds()
 
         self.viewer.dims.events.ndisplay.connect(self.update_selection)
+        # a proposed cut is drawn where its node is shown, and only while it is the
+        # one node selected
+        self.view_mode_updated.connect(self.cut_preview.clear)
+        self.kymograph_updated.connect(self.cut_preview.draw)
+        self.selected_nodes.selection_updated.connect(self._drop_cut_preview_if_moved)
 
     def get_collection_widget(self) -> CollectionWidget:
         """Return a reference to the groups widget"""
@@ -298,6 +317,8 @@ class TracksViewer:
         if self.collection_widget is not None:
             self.collection_widget._refresh()
 
+        self.cut_preview.clear()  # the tracks changed under it
+
         if len(self.selected_nodes) > 0 and any(
             not self.tracks.graph.has_node(node) for node in self.selected_nodes
         ):
@@ -342,6 +363,7 @@ class TracksViewer:
             tracks (funtracks.data_model.Tracks): The tracks to visualize in napari.
             name (str): The name of the tracks to display in the layer names
         """
+        self.cut_preview.clear()
         # clear rather than reset: the selection history belongs to the outgoing
         # tracks, and restoring one of its node ids against a different graph is
         # meaningless. This drops deleted_items with it.
@@ -415,6 +437,7 @@ class TracksViewer:
         them themselves, and we do not record which ones were ours.
         """
 
+        self.cut_preview.clear()
         self._disconnect_tracks()
         self.tracks = None
         # update_track_df cannot produce this: it returns early without tracks, so
@@ -972,6 +995,114 @@ class TracksViewer:
         for note in action.notes:
             show_info(note)
 
+    def set_cut_hypotheses(self, tracks: SolutionTracks, hypotheses) -> None:
+        """Give Shift+C alternative segmentations of the images of `tracks`.
+
+        Args:
+            tracks: The tracks they belong to; they are used only while these tracks
+                are shown.
+            hypotheses: A function of a frame index returning {hypothesis name: 2-D
+                label image of that frame}, or None to remove them.
+        """
+        self._cut_hypotheses = (tracks, hypotheses) if hypotheses is not None else None
+
+    def cut_hypotheses(self, time: int) -> dict:
+        """The alternative segmentations of frame `time` of the shown tracks ({} when
+        there are none)."""
+        if self._cut_hypotheses is None or self._cut_hypotheses[0] is not self.tracks:
+            return {}
+        return dict(self._cut_hypotheses[1](int(time)) or {})
+
+    def cut_from_hypotheses(self, event=None):
+        """Propose cuts of the selected nodes' masks from the alternative
+        segmentations (``cut_hypotheses``): one node or many, in one frame or across
+        frames; pressed again, the next cut of each node that has several. Enter
+        applies them (see :mod:`cut_preview`).
+
+        A stretch of frames is ranked earliest first, each frame against the frame
+        before as it will be once that frame's proposed cut is made, and against the
+        frame after without its selected nodes (masks the user has marked as wrong
+        must not make a cut look worse than leaving the mask whole)."""
+        if self.tracks is None or self.tracks.segmentation is None:
+            return
+        if len(self.selected_nodes) == 0:
+            show_warning("Select the nodes to cut.")
+            return
+        if self.tracks.ndim != 3:
+            show_warning("Cutting nodes is only available for 2D+time data.")
+            return
+        nodes = list(dict.fromkeys(int(n) for n in self.selected_nodes.as_list))
+        if self.cut_preview.active and set(nodes) == self.cut_preview.selection:
+            self.cut_preview.step()
+            return
+        times = {node: int(self.tracks.get_time(node)) for node in nodes}
+        hypotheses = {t: self.cut_hypotheses(t) for t in sorted(set(times.values()))}
+        if not any(hypotheses.values()):
+            show_warning(
+                "No alternative segmentations are loaded for these tracks; c cuts the "
+                "mask from the image."
+            )
+            return
+        frames = int(self.tracks.segmentation.shape[0])
+        frame = lambda t: np.asarray(self.tracks.segmentation[t])  # noqa: E731
+        cut_frames: dict[int, np.ndarray] = {}  # frames as they will be after the cuts
+        proposals, skipped = [], []
+        for node in sorted(nodes, key=lambda n: (times[n], n)):
+            time = times[node]
+            mask = node_mask(self.tracks, node)
+            if time - 1 in cut_frames:
+                before = cut_frames[time - 1]
+            else:
+                before = frame(time - 1) if time > 0 else None
+            after = None
+            if time + 1 < frames:
+                after = np.array(frame(time + 1))
+                after[np.isin(after, [n for n in nodes if times[n] == time + 1])] = 0
+            cuts = cut_candidates(mask, hypotheses[time], before, after)
+            if not cuts:
+                skipped.append(node)
+                continue
+            uncut, _ = best_continuity([mask], before, after, neighbourhood(mask))
+            proposals.append(Proposal(node, time, cuts, uncut))
+            cut_frames[time] = with_pieces(cut_frames.get(time, frame(time)), mask, cuts[0].pieces)
+        looked_at = max(len(h) for h in hypotheses.values())
+        if not proposals:
+            which = f"node {nodes[0]}" if len(nodes) == 1 else f"any of the {len(nodes)} selected nodes"
+            show_info(
+                f"None of the {looked_at} alternative segmentations cuts {which}; c cuts "
+                "a mask from the image."
+            )
+            return
+        self.cut_preview.show(proposals, skipped, looked_at)
+
+    def apply_cut_preview(self, event=None):
+        """Apply the cuts that Shift+C shows, as one undo step."""
+        preview = self.cut_preview
+        if self.tracks is None or not preview.active:
+            return
+        cuts = [
+            (p.node, p.current.pieces, "hypotheses " + ",".join(p.current.hypotheses))
+            for p in preview.proposals
+        ]
+        nodes = [p.node for p in preview.proposals]
+        preview.clear()
+        try:
+            # the view stays where the user is working
+            with self.selection_updates(set_view=False):
+                action = CutNodes(self.tracks, cuts)
+                self.selected_nodes.add_list([*nodes, *action.new_nodes])
+        except InvalidActionError as error:
+            show_warning(f"Could not cut: {error}")
+            return
+        for note in action.notes:
+            show_info(note)
+
+    def _drop_cut_preview_if_moved(self):
+        if self.cut_preview.active and (
+            {int(n) for n in self.selected_nodes.as_list} != self.cut_preview.selection
+        ):
+            self.cut_preview.clear()
+
     def merge_nodes(self, event=None):
         """Merge the selected nodes into one cell per time point: two (or more)
         masks that should have been one. Selections spanning several frames are
@@ -1018,6 +1149,9 @@ class TracksViewer:
             self.menu_manager.toggle_menu_panel_visibility()
 
     def deselect(self, event=None):
+        if self.cut_preview.active:  # Esc cancels a proposed cut first
+            self.cut_preview.clear()
+            return
         self.selected_nodes.reset()
 
     def restore_selection(self, event=None):

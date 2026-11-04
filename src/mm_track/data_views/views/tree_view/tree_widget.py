@@ -23,6 +23,7 @@ from mm_track.data_views.keybindings_config import (
     TREE_WIDGET_MODIFIER_ACTIONS,
     TREE_WIDGET_NAVIGATION_KEYS,
     TREE_WIDGET_SPECIFIC_ACTIONS,
+    general_key_action,
 )
 from mm_track.data_views.views.tree_view.flip_axes_widget import FlipTreeWidget
 from mm_track.data_views.views.tree_view.navigation_widget import NavigationWidget
@@ -253,7 +254,7 @@ class TreeWidget(QWidget):
             return
 
         # Try general keybinds (these also work in table widget)
-        action_name = GENERAL_KEY_ACTIONS.get(event.key())
+        action_name = general_key_action(event)
         if action_name:
             method = getattr(self.tracks_viewer, action_name, None)
             if method:

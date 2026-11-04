@@ -14,6 +14,12 @@ graph around it:
   painted with the kept node's label, which deletes them; the kept node inherits
   their parent (when it had none) and their children (when they had no other
   parent).
+* :class:`CutNode`: a node's mask is cut into two or more given pieces (the cut an
+  alternative segmentation offers, see :mod:`hypothesis_cut`). Every piece is
+  matched to a cell of the previous frame it continues (the node's parent, or a
+  neighbour whose track ended there), a piece left over becomes the parent's second
+  daughter, the node's children go to the piece they overlap, and a piece without a
+  child is continued by a neighbour of the next frame whose track starts there.
 
 Both follow funtracks' own convention for composite actions: the sub-actions are
 created with ``_top_level=False`` and the group is recorded once in the action
@@ -324,6 +330,314 @@ class SplitNode(ActionGroup):
         if _top_level:
             tracks.action_history.add_new_action(self)
             tracks.refresh.emit(new_label)
+
+
+# ----------------------------------------------------------------------
+# cut into several pieces
+# ----------------------------------------------------------------------
+@dataclass
+class CutPlan:
+    """What a cut of a node into pieces will do, decided before anything is changed.
+
+    Attributes:
+        node: The node being cut.
+        pieces: The pieces, which together are exactly the node's mask.
+        keep_index: The piece that keeps the node's label (and its parent).
+        parents: Per piece, the node of the previous frame it is linked to, or None.
+            For the kept piece this is the node's parent, or the cell it is newly
+            linked to when the node had none.
+        children: Per piece, the node's children it takes.
+        adopted: Per piece, the cells of the next frame without a parent (tracks
+            starting there) that it is newly linked to.
+        method: Where the cut came from, for the record.
+        notes: Anything the user should know about the links made.
+    """
+
+    node: int
+    pieces: list[np.ndarray]
+    keep_index: int
+    parents: list[int | None]
+    children: list[list[int]]
+    adopted: list[list[int]] = field(default_factory=list)
+    method: str = ""
+    notes: list[str] = field(default_factory=list)
+
+
+def _continuing_cells(tracks: Tracks, node: int, mask: np.ndarray, margin: int) -> list[int]:
+    """The cells of the previous frame a piece of `node` may continue: its parent, and
+    neighbours next to the mask whose tracks end in that frame."""
+    time = int(tracks.get_time(node))
+    if time == 0:
+        return []
+    parents = [int(p) for p in tracks.predecessors(node)]
+    previous = np.asarray(tracks.segmentation[time - 1])
+    region = ndimage.binary_dilation(mask, iterations=margin)
+    cells = list(parents)
+    for label in np.unique(previous[region]):
+        label = int(label)
+        if label and label not in cells and len(tracks.successors(label)) == 0:
+            cells.append(label)
+    return cells
+
+
+def _starting_cells(tracks: Tracks, node: int, mask: np.ndarray, margin: int) -> list[int]:
+    """The cells of the next frame next to the mask whose tracks start there (no
+    parent): where pieces of `node` may continue."""
+    time = int(tracks.get_time(node))
+    if time + 1 >= int(tracks.segmentation.shape[0]):
+        return []
+    following = np.asarray(tracks.segmentation[time + 1])
+    region = ndimage.binary_dilation(mask, iterations=margin)
+    return [
+        int(label)
+        for label in np.unique(following[region])
+        if label and len(tracks.predecessors(int(label))) == 0
+    ]
+
+
+def _match(overlap: np.ndarray, rows: list[int], cells: list[int]) -> dict[int, int]:
+    """One-to-one matching of rows (pieces) to cells by overlap, largest first."""
+    matched: dict[int, int] = {}
+    used: set[int] = set()
+    for flat in np.argsort(-overlap, axis=None):
+        k, j = divmod(int(flat), overlap.shape[1])
+        if overlap[k, j] == 0:
+            break
+        if rows[k] not in matched and j not in used:
+            matched[rows[k]] = cells[j]
+            used.add(j)
+    return matched
+
+
+def plan_cut(
+    tracks: Tracks,
+    node: int,
+    pieces: Sequence[np.ndarray],
+    method: str = "",
+    margin: int = 3,
+) -> CutPlan:
+    """Decide how a node cut into `pieces` is linked.
+
+    Each piece is matched, one to one and by overlap (pieces grown by `margin`
+    pixels), to a cell of the previous frame it may continue: the node's parent, or a
+    neighbour whose track ends there. The piece matched to the parent keeps the
+    node's label; without a parent, the largest piece keeps it. The first piece left
+    unmatched becomes the parent's second daughter when the parent has no other
+    child; any others start new tracks. The node's children go to the piece they
+    overlap most (or lie closest to). Pieces left without a child are matched the
+    same way to the cells of the next frame next to them whose tracks start there,
+    which then continue them.
+    """
+    node = int(node)
+    pieces = [np.asarray(p, dtype=bool) for p in pieces]
+    mask = node_mask(tracks, node)
+    time = int(tracks.get_time(node))
+    predecessors = [int(p) for p in tracks.predecessors(node)]
+    parent = predecessors[0] if predecessors else None
+    notes: list[str] = []
+
+    cells = _continuing_cells(tracks, node, mask, margin)
+    previous = np.asarray(tracks.segmentation[time - 1]) if cells else None
+    grown = [ndimage.binary_dilation(p, iterations=margin) for p in pieces]
+    overlap = np.array(
+        [[np.count_nonzero(previous[g] == c) for c in cells] for g in grown]
+    ).reshape(len(pieces), len(cells))
+    matched = _match(overlap, list(range(len(pieces))), cells)  # piece -> cell
+
+    if parent is not None and parent in matched.values():
+        keep_index = next(k for k, c in matched.items() if c == parent)
+    elif parent is not None:
+        parent_mask = node_mask(tracks, parent)
+        reach = [_overlap(parent_mask, g) for g in grown]
+        if max(reach) > 0:
+            keep_index = int(np.argmax(reach))
+        else:
+            position = np.asarray(tracks.get_position(parent), dtype=float)[-mask.ndim :]
+            keep_index = int(
+                np.argmin([np.linalg.norm(_centroid(p) - position) for p in pieces])
+            )
+        matched.pop(keep_index, None)  # the kept piece keeps the parent
+    else:
+        keep_index = int(np.argmax([np.count_nonzero(p) for p in pieces]))
+
+    parents: list[int | None] = [matched.get(k) for k in range(len(pieces))]
+    if parent is not None:
+        parents[keep_index] = parent
+    daughters = len(tracks.successors(parent)) if parent is not None else 2
+    for k in range(len(pieces)):
+        if parents[k] is not None or k == keep_index:
+            continue
+        if daughters < 2:
+            parents[k] = parent
+            daughters += 1
+        else:
+            notes.append(
+                "A piece continues no cell of the previous frame, so it starts a new "
+                "track."
+            )
+
+    children: list[list[int]] = [[] for _ in pieces]
+    for child in tracks.successors(node):
+        child = int(child)
+        child_mask = node_mask(tracks, child)
+        reach = [_overlap(child_mask, p) for p in pieces]
+        if max(reach) > 0:
+            k = int(np.argmax(reach))
+        else:
+            position = np.asarray(tracks.get_position(child), dtype=float)[-mask.ndim :]
+            k = int(np.argmin([np.linalg.norm(_centroid(p) - position) for p in pieces]))
+        children[k].append(child)
+
+    adopted: list[list[int]] = [[] for _ in pieces]
+    childless = [k for k in range(len(pieces)) if not children[k]]
+    starting = _starting_cells(tracks, node, mask, margin) if childless else []
+    if starting:
+        following = np.asarray(tracks.segmentation[time + 1])
+        overlap = np.array(
+            [[np.count_nonzero(following[grown[k]] == c) for c in starting] for k in childless]
+        ).reshape(len(childless), len(starting))
+        for k, cell in _match(overlap, childless, starting).items():
+            adopted[k].append(cell)
+
+    return CutPlan(
+        node=node,
+        pieces=pieces,
+        keep_index=keep_index,
+        parents=parents,
+        children=children,
+        adopted=adopted,
+        method=method,
+        notes=notes,
+    )
+
+
+class CutNode(ActionGroup):
+    """Cut a node into pieces according to a :class:`CutPlan`, as one undo step.
+
+    Attributes:
+        node (int): The node that was cut (its label stays on the kept piece).
+        new_nodes (list[int]): The labels of the other pieces, in piece order.
+        notes (list[str]): Anything the user should know about the links made.
+    """
+
+    def __init__(self, tracks: Tracks, plan: CutPlan, _top_level: bool = True):
+        super().__init__(tracks, actions=[])
+        self.tracks: Tracks
+        if tracks.segmentation is None:
+            raise InvalidActionError("Cannot cut a node without a segmentation.")
+        if len(plan.pieces) < 2 or any(not p.any() for p in plan.pieces):
+            raise InvalidActionError("A cut needs two or more pieces with pixels.")
+        mask = node_mask(tracks, plan.node)
+        union = np.zeros_like(mask)
+        for piece in plan.pieces:
+            if (union & piece).any():
+                raise InvalidActionError("The pieces of a cut must not overlap.")
+            union |= piece
+        if not np.array_equal(union, mask):
+            raise InvalidActionError("The pieces of a cut must be exactly the node's mask.")
+
+        self.node = int(plan.node)
+        self.notes = list(plan.notes)
+        time = int(tracks.get_time(self.node))
+        parent = next((int(p) for p in tracks.predecessors(self.node)), None)
+        labels: dict[int, int] = {plan.keep_index: self.node}
+        try:
+            # paint each other piece with a fresh label: funtracks creates its node
+            # and shrinks the cut one
+            for k, piece in enumerate(plan.pieces):
+                if k == plan.keep_index:
+                    continue
+                labels[k] = next_node_id(tracks)
+                self.actions.append(
+                    UserUpdateSegmentation(
+                        tracks,
+                        new_value=labels[k],
+                        updated_pixels=[(mask_pixels(piece, time), self.node)],
+                        current_track_id=int(tracks.get_next_track_id()),
+                        _top_level=False,
+                    )
+                )
+            moved = [
+                (k, child)
+                for k, taken in enumerate(plan.children)
+                if k != plan.keep_index
+                for child in taken
+            ]
+            for _, child in moved:
+                self.actions.append(
+                    UserDeleteEdge(tracks, (self.node, int(child)), _top_level=False)
+                )
+            for k, cell in enumerate(plan.parents):
+                if cell is None or (k == plan.keep_index and cell == parent):
+                    continue
+                self.actions.append(
+                    UserAddEdge(tracks, (int(cell), labels[k]), _top_level=False)
+                )
+            for k, child in moved:
+                self.actions.append(
+                    UserAddEdge(tracks, (labels[k], int(child)), _top_level=False)
+                )
+            for k, taken in enumerate(plan.adopted):
+                for cell in taken:
+                    self.actions.append(
+                        UserAddEdge(tracks, (labels[k], int(cell)), _top_level=False)
+                    )
+        except Exception:
+            for action in reversed(self.actions):
+                action.inverse()
+            raise
+
+        self.new_nodes = [labels[k] for k in range(len(plan.pieces)) if k != plan.keep_index]
+        if _top_level:
+            tracks.action_history.add_new_action(self)
+            tracks.refresh.emit(self.new_nodes[0])
+
+
+class CutNodes(ActionGroup):
+    """Cut several nodes, each into its given pieces, as one undo step.
+
+    The cuts are made earliest frame first and each is planned (:func:`plan_cut`)
+    after the one before is made, so a stretch of frames cut together links up: the
+    pieces of one frame continue the pieces of the frame before. If any cut fails,
+    none is kept.
+
+    Attributes:
+        cuts (list[CutNode]): One per node, in time order.
+        new_nodes (list[int]): The labels of all new pieces.
+        notes (list[str]): Anything the user should know about the links made.
+    """
+
+    def __init__(
+        self,
+        tracks: Tracks,
+        cuts: Sequence[tuple[int, Sequence[np.ndarray], str]],
+        _top_level: bool = True,
+    ):
+        """
+        Args:
+            tracks: The tracks.
+            cuts: (node, pieces, method) per node to cut.
+        """
+        super().__init__(tracks, actions=[])
+        self.tracks: Tracks
+        if not cuts:
+            raise InvalidActionError("Nothing to cut.")
+        order = sorted(cuts, key=lambda c: int(tracks.get_time(c[0])))
+        self.cuts: list[CutNode] = []
+        try:
+            for node, pieces, method in order:
+                cut = CutNode(tracks, plan_cut(tracks, node, pieces, method=method), _top_level=False)
+                self.cuts.append(cut)
+                self.actions.append(cut)
+        except Exception:
+            for action in reversed(self.actions):
+                action.inverse()
+            raise
+        self.new_nodes = [n for cut in self.cuts for n in cut.new_nodes]
+        self.notes = list(dict.fromkeys(note for cut in self.cuts for note in cut.notes))
+        if _top_level:
+            tracks.action_history.add_new_action(self)
+            tracks.refresh.emit(self.new_nodes[0] if len(self.cuts) == 1 else None)
 
 
 # ----------------------------------------------------------------------

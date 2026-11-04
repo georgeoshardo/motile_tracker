@@ -78,6 +78,18 @@ KEYBINDINGS = {
         "qt_keys": [Qt.Key_J],
         "targets": ["tracks_viewer"],
     },
+    "cut_from_hypotheses": {
+        # Cut as an alternative segmentation does; pressed again, the next cut
+        "napari_keys": ["Shift-C"],
+        "qt_keys": [],
+        "qt_shift_keys": [Qt.Key_C],
+        "targets": ["tracks_viewer"],
+    },
+    "apply_cut_preview": {
+        "napari_keys": ["Enter"],
+        "qt_keys": [Qt.Key_Return, Qt.Key_Enter],
+        "targets": ["tracks_viewer"],
+    },
     "undo": {
         "napari_keys": ["z"],
         "qt_keys": [Qt.Key_Z],
@@ -161,6 +173,22 @@ for action, config in KEYBINDINGS.items():
     if "tracks_viewer" in config["targets"] and config["qt_keys"]:
         for key in config["qt_keys"]:
             GENERAL_KEY_ACTIONS[key] = action
+
+# Qt General Key Actions with Shift held: Qt key constants -> tracks_viewer method
+# names (checked before GENERAL_KEY_ACTIONS, which ignores modifiers)
+GENERAL_SHIFT_KEY_ACTIONS = {}
+for action, config in KEYBINDINGS.items():
+    if "tracks_viewer" in config["targets"]:
+        for key in config.get("qt_shift_keys", []):
+            GENERAL_SHIFT_KEY_ACTIONS[key] = action
+
+
+def general_key_action(event) -> str | None:
+    """The tracks_viewer method a Qt key event asks for, if any."""
+    if event.modifiers() & Qt.ShiftModifier and event.key() in GENERAL_SHIFT_KEY_ACTIONS:
+        return GENERAL_SHIFT_KEY_ACTIONS[event.key()]
+    return GENERAL_KEY_ACTIONS.get(event.key())
+
 
 # Qt Tree-Widget Specific Actions: Qt key constants -> tree_widget method names
 TREE_WIDGET_SPECIFIC_ACTIONS = {}
