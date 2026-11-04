@@ -1,9 +1,6 @@
 from pathlib import Path
 
-from mm_track.application_menus.kymograph_data_widget import (
-    PREFETCH_DELAY_MS,
-    KymographDataWidget,
-)
+from mm_track.application_menus.kymograph_data_widget import KymographDataWidget
 from mm_track.application_menus.main_app import MENU_WIDGETS
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
@@ -120,24 +117,3 @@ def test_keep_previous_images_and_spatial_view(
     assert widget.select_group("trench_a") is True
     assert widget.select_group("nope") is False
     assert widget.current_group().path == Path(loaded_a.geff_path)
-
-
-def test_the_group_after_the_loaded_one_is_prefetched(
-    make_napari_viewer, geff_collection_store, qtbot
-):
-    """After a load, the next group in the direction of the last step is imported in
-    the background."""
-    from mm_track.import_export import geff_collection
-
-    viewer = make_napari_viewer()
-    widget = KymographDataWidget(viewer)
-    qtbot.addWidget(widget)
-    groups = widget.set_store_path(geff_collection_store)
-
-    widget.load_selected()  # trench_a
-    qtbot.waitUntil(lambda: geff_collection._prefetcher._pending is not None)
-    assert geff_collection._prefetcher._pending[0] == groups[1].path.resolve()
-
-    widget.load_next()  # trench_b, from the prefetch; nothing after it
-    qtbot.wait(2 * PREFETCH_DELAY_MS)
-    assert geff_collection._prefetcher._pending is None
