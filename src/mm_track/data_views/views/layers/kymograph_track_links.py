@@ -72,7 +72,10 @@ class KymographTrackLinks(Shapes):
     def set_width_scale(self, scale: float) -> None:
         """Draw the lines ``scale`` times their default width."""
         self.width_scale = float(scale)
+        # napari rebuilds the lines for the new width but does not ask the canvas
+        # to repaint; a refresh does
         self.edge_width = self.default_edge_width * self.width_scale
+        self.refresh()
 
     def process_click(
         self,

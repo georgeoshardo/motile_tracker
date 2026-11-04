@@ -279,8 +279,9 @@ class TestKymographControls:
     def test_line_width_and_marker_size_scale_the_kymograph(
         self, visualization_widget_2d
     ):
-        """The two size boxes resize the lines and markers as they change, and the
-        sizes are kept when the layers are rebuilt for another page."""
+        """The two size boxes resize the lines and markers as they change (and the
+        canvas is repainted to show it), and the sizes are kept when the layers are
+        rebuilt for another page."""
         widget, tracks_viewer = visualization_widget_2d
         tracks_viewer.set_view_mode("kymograph")
         kymograph_layers = tracks_viewer.kymograph_layers
@@ -291,8 +292,18 @@ class TestKymographControls:
         branch_width = branches.edge_width[0]
         point_size = points.size[0]
 
+        canvas = tracks_viewer.viewer.window._qt_viewer.canvas._scene_canvas
+        repaints = []
+        repaint = canvas.update
+
+        def count_repaints(*args, **kwargs):
+            repaints.append(1)
+            return repaint(*args, **kwargs)
+
         try:
+            canvas.update = count_repaints
             widget.link_width_box.setValue(2.5)
+            assert repaints, "the canvas was not repainted with the new line width"
             widget.point_size_box.setValue(0.5)
 
             assert np.allclose(paths.edge_width, 2.5 * path_width)
@@ -304,5 +315,6 @@ class TestKymographControls:
             assert np.allclose(paths.edge_width, 2.5 * path_width)
             assert np.allclose(kymograph_layers.points_layer.size, 0.5 * point_size)
         finally:
+            canvas.update = repaint
             widget.link_width_box.setValue(1.0)
             widget.point_size_box.setValue(1.0)

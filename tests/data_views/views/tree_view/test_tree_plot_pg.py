@@ -205,7 +205,7 @@ def test_scrolling_is_recorded(plot):
     pos = QPointF(300, 200)
     event = QWheelEvent(
         pos,
-        viewport.mapToGlobal(pos),
+        QPointF(viewport.mapToGlobal(pos.toPoint())),
         QPoint(0, 0),
         QPoint(0, 120),
         Qt.NoButton,

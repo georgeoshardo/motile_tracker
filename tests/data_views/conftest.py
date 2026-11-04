@@ -1,5 +1,6 @@
 import napari
 import pytest
+from napari._vispy.utils.gl import get_gl_extensions
 
 
 @pytest.fixture(scope="module")
@@ -24,5 +25,9 @@ def viewer(qapp):
     module- or session-scoped viewer fixture.
     """
     v = napari.Viewer(show=False)
+    # napari asks OpenGL for its extensions once, at the first image layer, and
+    # caches the answer. Ask now, while this viewer's context is current: tests
+    # that open and close viewers of their own leave no context current.
+    get_gl_extensions()
     yield v
     v.close()
