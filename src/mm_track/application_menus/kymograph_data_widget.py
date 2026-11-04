@@ -32,7 +32,8 @@ from mm_track.import_export.geff_collection import (
 class KymographDataWidget(QWidget):
     """Browse a zarr store for GEFF groups (for example one per mother machine
     trench, each with its image and segmentation next to the graph) and load one of
-    them, image included, straight into the kymograph view.
+    them, image included, straight into the kymograph view. A group loads as soon
+    as it is picked from the list, or stepped to with the arrows.
 
     Loaded tracks go to the Tracks List, so they can be edited, saved and exported
     like tracks loaded any other way.
@@ -44,6 +45,7 @@ class KymographDataWidget(QWidget):
         self.tracks_viewer = TracksViewer.get_instance(viewer)
         self.groups: list[GeffGroup] = []
         self._loaded_image_layers: list[napari.layers.Image] = []
+        self._loaded_name: str | None = None
 
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
@@ -65,6 +67,9 @@ class KymographDataWidget(QWidget):
         self.group_box = QComboBox()
         self.group_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.group_box.currentIndexChanged.connect(self._update_buttons)
+        # activated is only emitted when the user picks a group, not when the list
+        # is filled or a group is selected from code
+        self.group_box.activated.connect(self._on_group_picked)
         self.previous_button = QPushButton("◀")
         self.previous_button.setToolTip("Load the previous group")
         self.previous_button.setFixedWidth(32)
@@ -86,8 +91,6 @@ class KymographDataWidget(QWidget):
             "Remove the image layers added by earlier loads. Tracks stay in the "
             "Tracks List, so no edits are lost."
         )
-        self.load_button = QPushButton("Load")
-        self.load_button.clicked.connect(self.load_selected)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -97,7 +100,6 @@ class KymographDataWidget(QWidget):
         groups_layout.addLayout(group_row)
         groups_layout.addWidget(self.kymograph_checkbox)
         groups_layout.addWidget(self.replace_checkbox)
-        groups_layout.addWidget(self.load_button)
         groups_layout.addWidget(self.status_label)
 
         layout = QVBoxLayout(self)
@@ -200,8 +202,16 @@ class KymographDataWidget(QWidget):
         summary = f"{graph.num_nodes()} nodes, {graph.num_edges()} edges"
         if loaded.image is None:
             summary += ", no image"
+        self._loaded_name = group.name
         self._set_status(f"Loaded {group.name}: {summary}")
         return loaded
+
+    def _on_group_picked(self, _index: int) -> None:
+        """Load the group picked from the list, unless it is the one already
+        loaded."""
+        group = self.current_group()
+        if group is not None and group.name != self._loaded_name:
+            self.load_selected()
 
     def load_next(self) -> LoadedGeff | None:
         """Select and load the group after the current one."""
@@ -231,7 +241,6 @@ class KymographDataWidget(QWidget):
     def _update_buttons(self) -> None:
         index = self.group_box.currentIndex()
         count = len(self.groups)
-        self.load_button.setEnabled(count > 0)
         self.previous_button.setEnabled(index > 0)
         self.next_button.setEnabled(0 <= index < count - 1)
 

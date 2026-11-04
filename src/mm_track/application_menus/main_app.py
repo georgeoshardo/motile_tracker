@@ -66,7 +66,7 @@ class StartupWidget(QWidget):
             self.menu_manager = MenuManager(napari_viewer)
 
         widgets = MENU_WIDGETS
-        active_tab = "Getting Started"
+        active_tab = "Kymograph Data"
         if mode == "tracking":
             subset = ["Tracking", "Tracks List", "Visualization", "Lineage View"]
             widgets = {k: MENU_WIDGETS[k] for k in subset}
@@ -82,7 +82,7 @@ class StartupWidget(QWidget):
                 "Lineage View",
             ]
             widgets = {k: MENU_WIDGETS[k] for k in subset}
-            active_tab = "Tracks List"
+            active_tab = "Kymograph Data"
         elif mode in MENU_WIDGETS:
             widgets = {mode: MENU_WIDGETS[mode]}
             active_tab = mode
@@ -90,7 +90,7 @@ class StartupWidget(QWidget):
         for name, config in widgets.items():
             self.menu_manager.initialize_menu({name: config})
 
-        # make sure the 'Getting started' tab is the active foreground tab.
+        # make sure the active tab (Kymograph Data, in the full app) is in front.
         QTimer.singleShot(0, lambda: self._finalize_ui(active_tab, list(widgets)))
 
         # Now safely remove the widget, since everything we need is docked

@@ -13,14 +13,12 @@ def test_scan_lists_groups(make_napari_viewer, geff_collection_store, qtbot):
     viewer = make_napari_viewer()
     widget = KymographDataWidget(viewer)
     qtbot.addWidget(widget)
-    assert not widget.load_button.isEnabled()
 
     groups = widget.set_store_path(geff_collection_store)
 
     assert [group.name for group in groups] == ["trench_a", "trench_b"]
     assert [widget.group_box.itemText(i) for i in range(2)] == ["trench_a", "trench_b"]
     assert "2 GEFF groups" in widget.status_label.text()
-    assert widget.load_button.isEnabled()
     assert not widget.previous_button.isEnabled()
     assert widget.next_button.isEnabled()
 
@@ -32,15 +30,37 @@ def test_scan_reports_problems(make_napari_viewer, tmp_path, qtbot):
 
     widget.set_store_path(tmp_path / "does_not_exist")
     assert "Not a directory" in widget.status_label.text()
-    assert not widget.load_button.isEnabled()
 
     widget.set_store_path(tmp_path)
+    assert not widget.next_button.isEnabled()
     assert "No GEFF groups" in widget.status_label.text()
-    assert not widget.load_button.isEnabled()
 
     widget.path_edit.setText("")
     assert widget.scan() == []
     assert widget.status_label.text() == ""
+
+
+def test_picking_a_group_loads_it(make_napari_viewer, geff_collection_store, qtbot):
+    """Listing the groups loads nothing; picking one from the list loads it, and
+    picking the one already loaded does not load it again."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer()
+    widget = KymographDataWidget(viewer)
+    qtbot.addWidget(widget)
+    loads = []
+    load_selected = widget.load_selected
+    widget.load_selected = lambda: loads.append(load_selected()) or loads[-1]
+    widget.set_store_path(geff_collection_store)
+    assert loads == []
+
+    qtbot.keyClick(widget.group_box, Qt.Key_Down)  # pick trench_b
+
+    assert [loaded.name for loaded in loads] == ["trench_b"]
+    assert "Loaded trench_b" in widget.status_label.text()
+
+    widget.group_box.activated.emit(1)  # trench_b again
+    assert len(loads) == 1
 
 
 def test_load_next_and_previous(make_napari_viewer, geff_collection_store, qtbot):

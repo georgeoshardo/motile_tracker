@@ -71,7 +71,7 @@ def test_default_layout(qtbot, make_napari_viewer):
     strip along the bottom between a compact Editing & Selection and the other menus,
     leaving the right side of the window to the canvas."""
     from qtpy.QtCore import Qt
-    from qtpy.QtWidgets import QApplication, QDockWidget
+    from qtpy.QtWidgets import QApplication, QDockWidget, QTabBar
 
     from mm_track.application_menus.editing_selection_menu import (
         EditingSelectionWidget,
@@ -91,6 +91,9 @@ def test_default_layout(qtbot, make_napari_viewer):
             assert area[name] == Qt.BottomDockWidgetArea, name
     assert window.tabifiedDockWidgets(docks["Editing && Selection"]) == []
     assert Qt.RightDockWidgetArea not in area.values()
+    # the menus beside it open on Kymograph Data
+    tabbars = window.findChildren(QTabBar)
+    assert "Kymograph Data" in [bar.tabText(bar.currentIndex()) for bar in tabbars]
 
     editing = window.findChildren(EditingSelectionWidget)[0]
     assert editing.editing_widget.set_division_btn.text() == "Division [Y]"
