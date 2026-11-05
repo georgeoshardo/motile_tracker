@@ -18,8 +18,12 @@ Each publication rebuilds the dataset in that format from the edited tracks
   property (``seg_id``); new cells get the lowest free label of their frame;
 - positions keep their original value while a cell is unchanged, and take the
   position funtracks computes for an edited or new cell;
-- tracklets and lineages follow the GEFF definitions, keeping the original
-  numbers wherever a tracklet or lineage survives (on a join, the earlier one's);
+- tracklets and lineages follow the GEFF definitions, numbered as the editor
+  shows them when it loaded the dataset's own numbers (:func:`shown_numbers`): a
+  tracklet or lineage takes the number of its earliest cell, and only one that
+  number is already taken by an earlier one (a merge, which GEFF tracklets do not
+  cross) gets a new one; otherwise they keep the original numbers wherever a
+  tracklet or lineage survives (on a join, the earlier one's);
 - properties that repeat another (``label`` == ``seg_id``, ``coords`` == the
   position) are kept in step with it;
 - metadata, encodings, property order and JSON layout are the original ones.
@@ -476,6 +480,39 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
         "labels": labels,
         "archived": archived,
         "edge_archived": edge_archived,
+        # whether the editor shows the file's own tracklet and lineage numbers, so
+        # build() writes the numbers it shows
+        "shown": {
+            role: _shows_file_numbers(tracks, key, node_ids, values.get(prop), offset)
+            for role, key, prop in (
+                ("tracklet", tracks.features.tracklet_key, tracklet_prop),
+                ("lineage", tracks.features.lineage_key, lineage_prop),
+            )
+        },
+    }
+
+
+def _shows_file_numbers(tracks, key, node_ids, file_values, offset) -> bool:
+    """Whether every cell carries the file's number under the editor's key."""
+    if key is None or file_values is None or len(node_ids) == 0:
+        return False
+    if key not in tracks.graph_solution.node_attr_keys():
+        return False
+    table = tracks.graph_solution.node_attrs(attr_keys=["node_id", key])
+    shown = dict(zip(table["node_id"].to_list(), table[key].to_list(), strict=True))
+    return all(
+        shown.get(int(n) + offset) == int(v)
+        for n, v in zip(node_ids, file_values, strict=True)
+    )
+
+
+def shown_numbers(tracks, key, offset) -> dict[int, int]:
+    """The tracklet or lineage number the editor shows for each cell, by file id."""
+    table = tracks.graph_solution.node_attrs(attr_keys=["node_id", key])
+    return {
+        int(n) - offset: int(v)
+        for n, v in zip(table["node_id"].to_list(), table[key].to_list(), strict=True)
+        if v is not None and int(v) >= 0
     }
 
 
@@ -633,27 +670,27 @@ def build(tracks, fmt) -> dict:
     for s, t in edge_order:
         succ[s].append(t)
         pred[t].append(s)
-    tracklet = lineage = None
-    archived_numbers = [
-        a.get("tracklet") for a in archived.values() if a.get("tracklet") is not None
-    ]
-    if roles["tracklet"] is not None:
-        tracklet = _number(
-            _tracklets(order, succ, pred),
-            times,
-            lambda n: (archived.get(str(n)) or {}).get("tracklet"),
-            max(archived_numbers, default=0),
-        )
-    archived_lineages = [
-        a.get("lineage") for a in archived.values() if a.get("lineage") is not None
-    ]
-    if roles["lineage"] is not None:
-        lineage = _number(
-            _components(order, succ, pred),
-            times,
-            lambda n: (archived.get(str(n)) or {}).get("lineage"),
-            max(archived_lineages, default=0),
-        )
+    numbered = {}
+    for role, key, groups in (
+        ("tracklet", tracks.features.tracklet_key, _tracklets),
+        ("lineage", tracks.features.lineage_key, _components),
+    ):
+        if roles[role] is None:
+            numbered[role] = None
+            continue
+        archived_numbers = [
+            a.get(role) for a in archived.values() if a.get(role) is not None
+        ]
+        if (fmt.get("shown") or {}).get(role):
+            # the numbers the editor shows, kept up to date while editing
+            shown = shown_numbers(tracks, key, offset)
+            number_of = shown.get
+            highest = max([*shown.values(), *archived_numbers], default=0)
+        else:
+            number_of = lambda n, role=role: (archived.get(str(n)) or {}).get(role)  # noqa: E731
+            highest = max(archived_numbers, default=0)
+        numbered[role] = _number(groups(order, succ, pred), times, number_of, highest)
+    tracklet, lineage = numbered["tracklet"], numbered["lineage"]
     return {
         "order": order,
         "edge_order": edge_order,

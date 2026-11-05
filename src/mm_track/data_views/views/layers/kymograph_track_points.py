@@ -28,6 +28,7 @@ from mm_track.data_views.views.layers.track_points import custom_select
 from mm_track.data_views.views_coordinator.user_dialogs import (
     confirm_force_operation,
 )
+from mm_track.data_views.views.layers.cell_status import CellStatusPoints
 
 if TYPE_CHECKING:
     from napari.utils.events import Event
@@ -43,7 +44,7 @@ MIN_SCREEN_SIZE = 15
 MAX_FRAME_FRACTION = 0.12
 
 
-class KymographTrackPoints(Points):
+class KymographTrackPoints(CellStatusPoints, Points):
     """Points layer showing the nodes on the current kymograph page.
 
     Every node is drawn at its (y, x) position, shifted along x by the offset of its

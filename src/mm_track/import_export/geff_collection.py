@@ -291,9 +291,9 @@ def node_name_map_from_metadata(
     """Map funtracks' standard node keys to this geff's property names.
 
     Uses the typed ``axes`` (time / space) for ``time`` and ``pos``, the
-    ``track_node_props`` lineage for ``lineage_id``, and the labels'
-    ``label_prop`` for ``seg_id``. Tracklets are left to funtracks. Only properties that exist in the geff are
-    mapped, so funtracks can fall back to its own inference for the rest. Given the
+    ``track_node_props`` tracklet and lineage for ``tracklet_id`` and ``lineage_id``,
+    and the labels' ``label_prop`` for ``seg_id``. Only properties that exist in the
+    geff are mapped, so funtracks can fall back to its own inference for the rest. Given the
     geff's path, any other numeric node property with one value per node is kept
     under its own name.
     """
@@ -309,11 +309,19 @@ def node_name_map_from_metadata(
         name_map["pos"] = space_axes  # geff axes are listed in array order
 
     track_props = metadata.track_node_props or {}
-    # Tracklets are not imported: funtracks derives them from the links (and keeps
-    # them up to date while editing), and the dataset's own tracklet numbers are
-    # kept by the autosave format (see persistence.source_format). Mapping them to
-    # a key funtracks does not maintain would leave a stale copy in the graph.
-    if track_props.get("lineage") in props:
+    # The dataset's own tracklet and lineage numbers, so a cell is shown with the
+    # numbers it has in the file. funtracks keeps them up to date while editing (a
+    # new tracklet or lineage gets the next free number), and the autosave format
+    # writes what it shows (see persistence.source_format). funtracks computes its
+    # own numbers instead when the file's do not fit the links, or (checked here)
+    # when they count from 0, which the views take for "no track".
+    if track_props.get("tracklet") in props and _numbered_from_one(
+        geff_path, track_props["tracklet"]
+    ):
+        name_map["tracklet_id"] = track_props["tracklet"]
+    if track_props.get("lineage") in props and _numbered_from_one(
+        geff_path, track_props["lineage"]
+    ):
         name_map["lineage_id"] = track_props["lineage"]
 
     if label_prop in props:
@@ -337,6 +345,20 @@ def node_name_map_from_metadata(
         if numeric and geff_path is not None and _is_scalar_prop(geff_path, prop):
             name_map[prop] = prop
     return name_map
+
+
+def _numbered_from_one(geff_path: Path | None, prop: str) -> bool:
+    """Whether a GEFF node property's numbers are all 1 or more (True when the
+    GEFF's path is not given and the values cannot be read)."""
+    if geff_path is None:
+        return True
+    try:
+        values = zarr.open_array(
+            Path(geff_path) / "nodes" / "props" / prop / "values", mode="r"
+        )[:]
+    except (FileNotFoundError, KeyError, ValueError, zarr.errors.BaseZarrError):
+        return False
+    return values.size == 0 or int(np.min(values)) >= 1
 
 
 def _is_scalar_prop(geff_path: Path, prop: str) -> bool:

@@ -187,9 +187,9 @@ def empty_lookups() -> TrackLookups:
 def track_lookups(df: pd.DataFrame) -> TrackLookups:
     """Track, time and lineage lookups for the rows of ``df``.
 
-    A lineage id is the track id at the root of the lineage: follow parent_track_id
-    (0 means "no parent") up from each track. Deriving it here keeps the tree view
-    independent of funtracks' optional lineage feature.
+    A row's lineage id is its ``lineage_id`` (the tracks' lineage feature, the
+    number the dataset saves). Without that column it is the track id at the root
+    of the lineage: follow parent_track_id (0 means "no parent") up from each track.
     """
     row_track_ids = df["track_id"].to_numpy()
     # Only whole-numbered lanes are labelled: a parent sits between its daughters'
@@ -208,6 +208,9 @@ def track_lookups(df: pd.DataFrame) -> TrackLookups:
         ),
         row_lineage_ids=None,
     )
+    if "lineage_id" in df:
+        lookups.row_lineage_ids = df["lineage_id"].fillna(0).to_numpy().astype(np.int64)
+        return lookups
     if "parent_track_id" not in df:
         return lookups
     parent_of = dict(

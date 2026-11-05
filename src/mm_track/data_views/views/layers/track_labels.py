@@ -26,6 +26,7 @@ from mm_track.data_views.views.layers.contour_labels import ContourLabels
 from mm_track.data_views.views_coordinator.user_dialogs import (
     confirm_force_operation,
 )
+from mm_track.data_views.views.layers.cell_status import describe_cell, with_cell
 
 if TYPE_CHECKING:
     from napari.utils.events import Event
@@ -216,6 +217,37 @@ class TrackLabels(ContourLabels):
                 **dict(zip(nodes, colors, strict=True)),
                 None: [0, 0, 0, 0],
             }
+        )
+
+    def get_status(
+        self,
+        position=None,
+        *,
+        view_direction=None,
+        dims_displayed=None,
+        world: bool = False,
+        value=None,
+    ) -> dict:
+        """napari's status, with the mask's label replaced by its cell's IDs (see
+        :mod:`.cell_status`); a colouring property's readout stays after them."""
+        status = super().get_status(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+            value=value,
+        )
+        if position is None:
+            return status
+        if value is None:
+            value = self.get_value(
+                position,
+                view_direction=view_direction,
+                dims_displayed=dims_displayed,
+                world=world,
+            )
+        return with_cell(
+            status, describe_cell(self.tracks_viewer.tracks, value), keep_details=True
         )
 
     def update_feature_readout(self) -> None:

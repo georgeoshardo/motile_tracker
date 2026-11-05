@@ -84,8 +84,9 @@ def extract_sorted_tracks(
         pd.DataFrame | None: data frame with all the information needed to
         construct the tree plot. Columns are: 't', 'node_id', 'track_id',
         'color', 'x', 'y', ('z'), 'index', 'parent_id', 'parent_track_id',
-        'state', 'symbol', and 'x_axis_pos' (the tracklet's lane, see
-        :func:`trench_lanes`)
+        'state', 'symbol', 'x_axis_pos' (the tracklet's lane, see
+        :func:`trench_lanes`) and, when the tracks have lineages, 'lineage_id'
+        (the lineage feature, as saved)
     """
 
     if tracks is None or tracks.graph is None:
@@ -102,8 +103,13 @@ def extract_sorted_tracks(
         if feature.get("feature_type") != "edge"
         and key in solution_nx_graph.node_attr_keys()
     ]
+    lineage_key = tracks.features.lineage_key
+    if lineage_key not in solution_nx_graph.node_attr_keys():
+        lineage_key = None
     all_keys = list(
-        {DEFAULT_ATTR_KEYS.NODE_ID, time_key, tracklet_key} | set(node_feature_keys)
+        {DEFAULT_ATTR_KEYS.NODE_ID, time_key, tracklet_key}
+        | set(node_feature_keys)
+        | ({lineage_key} if lineage_key else set())
     )
     if len(solution_nx_graph.node_ids()) != 0:
         df_attrs = solution_nx_graph.node_attrs(attr_keys=all_keys)
@@ -113,6 +119,11 @@ def extract_sorted_tracks(
     node_to_time = dict(zip(node_ids_list, df_attrs[time_key].to_list(), strict=True))
     node_to_track_id = dict(
         zip(node_ids_list, df_attrs[tracklet_key].to_list(), strict=True)
+    )
+    node_to_lineage = (
+        dict(zip(node_ids_list, df_attrs[lineage_key].to_list(), strict=True))
+        if lineage_key
+        else {}
     )
     feat_cols = {key: df_attrs[key].to_list() for key in node_feature_keys}
     node_to_feat = {
@@ -197,6 +208,8 @@ def extract_sorted_tracks(
                 "state": state,
                 "symbol": symbol,
             }
+            if lineage_key:
+                track_dict["lineage_id"] = node_to_lineage[node]
 
             for feature_key, feature in tracks.features.items():
                 if feature.get("feature_type") == "edge":

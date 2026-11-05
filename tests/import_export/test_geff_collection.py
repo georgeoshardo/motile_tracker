@@ -106,13 +106,31 @@ def test_node_name_map_from_metadata(geff_collection_store):
 
     name_map = node_name_map_from_metadata(metadata, label_prop="seg_id")
 
-    # tracklets are derived by funtracks, not imported (they would go stale)
+    # the file's own tracklet and lineage numbers, which funtracks keeps
     assert name_map == {
         "time": "time",
         "pos": ["y", "x"],
+        "tracklet_id": "tracklet",
         "lineage_id": "lineage",
         "seg_id": "seg_id",
     }
+
+
+def test_node_name_map_leaves_numbers_from_zero_to_funtracks(geff_collection_store):
+    """Tracklet and lineage numbers that count from 0 are not imported: the views
+    take 0 for "no track", so funtracks numbers them itself."""
+    import zarr
+
+    geff_path = geff_collection_store / "trench_a" / "tracking_graph.geff"
+    for prop in ("tracklet", "lineage"):
+        values = zarr.open_array(geff_path / "nodes/props" / prop / "values", mode="r+")
+        values[...] = values[...] - 1
+    metadata = GeffMetadata.read(geff_path)
+
+    name_map = node_name_map_from_metadata(metadata, "seg_id", geff_path)
+
+    assert "tracklet_id" not in name_map
+    assert "lineage_id" not in name_map
 
 
 def test_node_name_map_skips_properties_the_geff_does_not_have(

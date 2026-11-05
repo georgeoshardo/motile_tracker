@@ -38,7 +38,7 @@ def _multiscale(name, axes):
 
 def _write_trench(root, name, segmentation):
     """A trench as PyMMM writes it: a (t, c, y, x) OME image, the tracker's
-    (t, y, x) label image and its zarr v3 GEFF (node ids from 0, seg_id = label)."""
+    (t, y, x) label image and its zarr v3 GEFF (node ids from 1, seg_id = label)."""
     from geff.core_io import write_arrays
     from geff_spec import Axis, GeffMetadata, RelatedObject
 
@@ -82,7 +82,8 @@ def _write_trench(root, name, segmentation):
         "track_id": np.array([TRACKLETS[r[3]] for r in rows], dtype=np.int64),
         "lineage_id": np.array([LINEAGES[r[3]] for r in rows], dtype=np.int64),
     }
-    edges = np.array([(index[a], index[b]) for a, b in EDGES], dtype=np.int64)
+    # node ids from 1, as PyMMM writes them (funtracks takes 0 for the background)
+    edges = np.array([(index[a] + 1, index[b] + 1) for a, b in EDGES], dtype=np.int64)
     image.create_group("tracks")
     metadata = GeffMetadata(
         directed=True,
@@ -99,7 +100,7 @@ def _write_trench(root, name, segmentation):
     )
     geff = Path(str(root.store.root)) / name / "tracks" / f"{RUN}.geff"
     write_arrays(
-        str(geff), np.arange(len(rows), dtype=np.int64),
+        str(geff), np.arange(1, len(rows) + 1, dtype=np.int64),
         {key: {"values": value, "missing": None} for key, value in props.items()},
         edges, {"score": {"values": np.ones(len(edges), dtype=np.float32), "missing": None}},
         metadata, zarr_format=3, overwrite=True,
@@ -132,10 +133,10 @@ def _tracker_output(trench: Path) -> dict:
 
 
 def _node_of(geff_path, seg_id):
-    """The loaded node id of the GEFF node with this seg_id (ids are offset by one
-    on import, as the GEFF numbers its nodes from 0)."""
+    """The node id of the GEFF node with this seg_id (the same in mm-track)."""
     seg_ids = zarr.open_array(Path(geff_path) / "nodes/props/seg_id/values", mode="r")[:]
-    return int(np.flatnonzero(seg_ids == seg_id)[0]) + 1
+    ids = zarr.open_array(Path(geff_path) / "nodes/ids", mode="r")[:]
+    return int(ids[np.flatnonzero(seg_ids == seg_id)[0]])
 
 
 def _open(geff_path, tmp_path, qtbot):
@@ -229,6 +230,7 @@ def test_first_edit_makes_the_curated_copy(experiment_store, tmp_path, qtbot):
     widget, tracks = _open(tracker, tmp_path, qtbot)
     deleted = _node_of(tracker, 6)  # the cell with no links, in frame 4
     assert tracks.get_time(deleted) == 4
+    assert tracks.edit_session._initial["format"]["id_offset"] == 0
 
     UserDeleteNode(tracks, deleted)
     session = tracks.edit_session
@@ -365,6 +367,108 @@ def test_kymograph_panel_marks_reviewed_trenches(
     widget.reviewed_checkbox.click()
     assert not widget.reviewed_checkbox.isChecked()
     assert widget.group_box.itemText(0) == "trench_0000 ✎"
+    _close_sessions(viewer)
+
+
+def _file_numbers(geff, prop):
+    """{node id: value} of a GEFF node property, as the file has it."""
+    ids = zarr.open_array(Path(geff) / "nodes/ids", mode="r")[:]
+    values = zarr.open_array(Path(geff) / f"nodes/props/{prop}/values", mode="r")[:]
+    return dict(zip(ids.tolist(), values.tolist(), strict=True))
+
+
+def _shown_numbers(tracks, key):
+    """{node id: value} of a node attribute, as mm-track holds it."""
+    table = tracks.graph_solution.node_attrs(attr_keys=["node_id", key])
+    return dict(zip(table["node_id"].to_list(), table[key].to_list(), strict=True))
+
+
+def test_cells_carry_the_file_ids(experiment_store):
+    """A cell's node id, tracklet and lineage in mm-track are the file's."""
+    tracker = experiment_store / "trench_0000" / "tracks" / f"{RUN}.geff"
+
+    tracks = load_geff_group(tracker).tracks
+
+    features = tracks.features
+    assert sorted(_shown_numbers(tracks, features.tracklet_key)) == sorted(
+        _file_numbers(tracker, "track_id"))
+    assert _shown_numbers(tracks, features.tracklet_key) == _file_numbers(tracker, "track_id")
+    assert _shown_numbers(tracks, features.lineage_key) == _file_numbers(tracker, "lineage_id")
+
+
+def test_edits_save_the_numbers_shown(experiment_store, tmp_path, qtbot):
+    """New tracklets and lineages are saved with the numbers mm-track gave them,
+    in the order the edits made them, and every other cell keeps the file's."""
+    from funtracks.user_actions import UserDeleteEdge
+
+    tracker = experiment_store / "trench_0000" / "tracks" / f"{RUN}.geff"
+    before_tracklets = _file_numbers(tracker, "track_id")
+    before_lineages = _file_numbers(tracker, "lineage_id")
+    widget, tracks = _open(tracker, tmp_path, qtbot)
+    first, middle, last = (_node_of(tracker, s) for s in (3, 4, 5))  # tracklet 3
+
+    # split tracklet 3 at its end, then before its middle cell: the later cell gets
+    # the first new number. (Numbered by time at saving, they would swap.)
+    UserDeleteEdge(tracks, (middle, last))
+    UserDeleteEdge(tracks, (first, middle))
+    session = tracks.edit_session
+    session.flush()
+
+    shown_tracklets = _shown_numbers(tracks, tracks.features.tracklet_key)
+    shown_lineages = _shown_numbers(tracks, tracks.features.lineage_key)
+    top = max(before_tracklets.values())
+    assert (shown_tracklets[last], shown_tracklets[middle]) == (top + 1, top + 2)
+    assert _file_numbers(session.path, "track_id") == shown_tracklets
+    assert _file_numbers(session.path, "lineage_id") == shown_lineages
+    kept = set(shown_tracklets) - {middle, last}
+    assert {n: shown_tracklets[n] for n in kept} == {n: before_tracklets[n] for n in kept}
+    assert {n: shown_lineages[n] for n in kept} == {n: before_lineages[n] for n in kept}
+    widget.close_sessions()
+
+
+def test_tree_lineage_is_the_saved_lineage(experiment_store):
+    """The tree's hover names a cell's lineage by its lineage_id, not by the
+    number of the lineage's first tracklet."""
+    import napari
+
+    from mm_track.data_views.views.tree_view.tree_plot_shared import track_lookups
+    from mm_track.data_views.views.tree_view.tree_widget_utils import (
+        extract_sorted_tracks,
+    )
+
+    tracker = experiment_store / "trench_0000" / "tracks" / f"{RUN}.geff"
+    tracks = load_geff_group(tracker).tracks
+    df, _ = extract_sorted_tracks(tracks, napari.utils.colormaps.label_colormap(49))
+
+    lookups = track_lookups(df)
+
+    shown = dict(zip(df["node_id"].astype(int), lookups.row_lineage_ids.tolist()))
+    assert shown == _file_numbers(tracker, "lineage_id")
+    # the cell with no links is lineage 2, its tracklet 5
+    lone = _node_of(tracker, 6)
+    assert shown[lone] == 2 and _file_numbers(tracker, "track_id")[lone] == 5
+
+
+def test_status_bar_names_the_cell(make_napari_viewer, experiment_store):
+    """Hovering a point or a mask shows the cell's node, tracklet and lineage, not
+    the point's index in the layer."""
+    from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+    from mm_track.import_export.geff_collection import add_geff_group_to_viewer
+
+    viewer = make_napari_viewer()
+    tracker = experiment_store / "trench_0000" / "tracks" / f"{RUN}.geff"
+    add_geff_group_to_viewer(viewer, tracker, "trench_0000", kymograph=False)
+    layers = TracksViewer.get_instance(viewer).tracking_layers
+    lone = _node_of(tracker, 6)
+    position = np.asarray(layers.points_layer.data[layers.points_layer.node_index_dict[lone]])
+    viewer.dims.set_point(0, position[0])
+
+    points = layers.points_layer.get_status(position, world=True)
+    masks = layers.seg_layer.get_status(position, world=True)
+
+    assert points["value"] == f"node {lone}, track 5, lineage 2"
+    assert masks["value"].startswith(f"node {lone}, track 5, lineage 2")
+    assert points["coordinates"].endswith(f": node {lone}, track 5, lineage 2")
     _close_sessions(viewer)
 
 

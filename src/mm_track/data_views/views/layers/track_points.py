@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
+from mm_track.data_views.views.layers.cell_status import CellStatusPoints
 from mm_track.data_views.views.layers.out_of_slice_points import ZOnlyPoints
 
 
@@ -44,7 +45,7 @@ def custom_select(layer: napari.layers.Points, event: Event):
         yield from select(layer, event)
 
 
-class TrackPoints(ZOnlyPoints):
+class TrackPoints(CellStatusPoints, ZOnlyPoints):
     """Extended points layer that holds the track information and emits and
     responds to dynamics visualization signals
     """
