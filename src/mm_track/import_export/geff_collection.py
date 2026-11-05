@@ -17,6 +17,12 @@ helpers here read the GEFF metadata instead (``related_objects`` for the arrays,
 ``track_node_props`` and the typed ``axes`` for the property names), so a whole
 store of such groups can be listed and any group loaded into the viewer in one
 step, straight into the kymograph view.
+
+A PyMMM experiment group (one OME-Zarr image per trench, see
+:mod:`mm_track.experiment_layout`) lists one GEFF per trench for a tracking run,
+and a tracker's GEFF loads as its curated copy once there is one. Related objects
+may be OME-Zarr groups (:mod:`mm_track.ome_zarr`): an image's channels load as one
+layer each.
 """
 
 from __future__ import annotations
@@ -35,6 +41,8 @@ import zarr
 from funtracks.import_export import import_from_geff
 from geff import GeffMetadata
 
+from mm_track import experiment_layout
+from mm_track.ome_zarr import Channel, image_channels, multiscale_array
 from mm_track.persistence.paths import open_session
 from mm_track.persistence.session import EditSession, has_history
 
@@ -72,6 +80,9 @@ class RelatedArrays:
     labels_path: Path | None = None
     label_prop: str | None = None
     image_path: Path | None = None
+    # an OME-Zarr image with a channel axis: the axis and its channels (omero)
+    channel_axis: int | None = None
+    channels: tuple[Channel, ...] = ()
 
 
 @dataclass
@@ -84,6 +95,17 @@ class LoadedGeff:
     image: np.ndarray | zarr.Array | None = None
     image_path: Path | None = None
     image_layer: napari.layers.Image | None = None
+    # one (channel, (T, Y, X) array) per channel of an OME-Zarr image; `image` is
+    # then the first visible channel
+    channels: list[tuple[Channel, np.ndarray | zarr.Array]] | None = None
+    channel_layers: list[napari.layers.Image] | None = None
+
+    @property
+    def image_layers(self) -> list[napari.layers.Image]:
+        """Every image layer added for this group."""
+        if self.channel_layers:
+            return list(self.channel_layers)
+        return [self.image_layer] if self.image_layer is not None else []
 
 
 @contextmanager
@@ -153,7 +175,7 @@ def _group_name(store: Path, geff_dir: Path) -> str:
     return relative.parent.as_posix()
 
 
-def find_geff_groups(store: Path) -> list[GeffGroup]:
+def find_geff_groups(store: Path, run: str | None = None) -> list[GeffGroup]:
     """List the geff groups in a zarr store, in sorted order.
 
     Walks the directory tree without descending into arrays (whose chunk files
@@ -161,8 +183,14 @@ def find_geff_groups(store: Path) -> list[GeffGroup]:
     stores, and for stores mixing the two, which zarr's own hierarchy walk
     refuses to traverse.
 
+    A PyMMM experiment group lists one tracking run's GEFF per trench instead,
+    named after the trench (its tracker GEFF, which loads as its curated copy once
+    there is one).
+
     Args:
         store (Path): The store to search. May itself be a geff group.
+        run (str | None): For an experiment group, the tracking run to list.
+            Defaults to the first one recorded.
 
     Returns:
         list[GeffGroup]: The geffs found, named by their location in the store.
@@ -170,6 +198,14 @@ def find_geff_groups(store: Path) -> list[GeffGroup]:
     store = Path(store)
     if is_geff_dir(store):
         return [GeffGroup(_group_name(store, store), store)]
+    if experiment_layout.is_experiment(store):
+        run = run or next(iter(experiment_layout.runs(store)), None)
+        if run is None:
+            return []
+        return [
+            GeffGroup(name, path)
+            for name, path in experiment_layout.trench_geffs(store, run)
+        ]
 
     found: list[Path] = []
     for dirpath, dirnames, _ in os.walk(store):
@@ -202,13 +238,16 @@ def read_related_arrays(
 
     Paths in ``related_objects`` are relative to the geff group. Objects that do
     not exist on disk are ignored with a warning in the log, so a geff whose
-    images were moved still loads, just without them.
+    images were moved still loads, just without them. An OME-Zarr multiscale
+    group (image or image-label) stands for its full-resolution array; an image's
+    channel axis and ``omero`` channels are returned with it.
     """
     geff_path = Path(geff_path)
     if metadata is None:
         metadata = GeffMetadata.read(geff_path)
 
-    labels_path = label_prop = image_path = None
+    labels_path = label_prop = image_path = channel_axis = None
+    channels: tuple[Channel, ...] = ()
     for related in metadata.related_objects or []:
         target = (geff_path / related.path).resolve()
         if not target.exists():
@@ -221,12 +260,18 @@ def read_related_arrays(
             continue
         if related.type == "labels" and labels_path is None:
             # node_prop replaced label_prop in geff-spec 1.2.1; read either.
-            labels_path = target
+            labels_path = multiscale_array(target)
             label_prop = getattr(related, "node_prop", None) or related.label_prop
         elif related.type == "image" and image_path is None:
-            image_path = target
+            image_path = multiscale_array(target)
+            channel_axis, found = image_channels(target)
+            channels = tuple(found)
     return RelatedArrays(
-        labels_path=labels_path, label_prop=label_prop, image_path=image_path
+        labels_path=labels_path,
+        label_prop=label_prop,
+        image_path=image_path,
+        channel_axis=channel_axis,
+        channels=channels,
     )
 
 
@@ -316,6 +361,43 @@ def open_array(path: Path) -> np.ndarray | zarr.Array:
     return array
 
 
+class _ChannelView:
+    """One channel of a large zarr image, read lazily (napari slices it)."""
+
+    def __init__(self, array: zarr.Array, axis: int, index: int):
+        self.array, self.axis, self.index = array, axis, index
+        shape = list(array.shape)
+        del shape[axis]
+        self.shape, self.dtype, self.ndim = tuple(shape), array.dtype, len(shape)
+
+    def __getitem__(self, key):
+        key = key if isinstance(key, tuple) else (key,)
+        key = list(key) + [slice(None)] * (self.ndim - len(key))
+        key.insert(self.axis, self.index)
+        return self.array[tuple(key)]
+
+    def __array__(self, dtype=None, copy=None):
+        return np.asarray(self[()], dtype=dtype)
+
+
+def _read_channels(
+    related: RelatedArrays,
+) -> list[tuple[Channel, np.ndarray | _ChannelView]]:
+    """The channels of an OME-Zarr image, each (T, Y, X): in memory when the image
+    is small enough, read lazily otherwise."""
+    array = zarr.open_array(related.image_path, mode="r")
+    if array.nbytes <= MAX_IN_MEMORY_BYTES:
+        data = np.asarray(array[...])
+        return [
+            (channel, np.take(data, channel.index, axis=related.channel_axis))
+            for channel in related.channels
+        ]
+    return [
+        (channel, _ChannelView(array, related.channel_axis, channel.index))
+        for channel in related.channels
+    ]
+
+
 def load_geff_group(
     geff_path: Path,
     name: str | None = None,
@@ -330,11 +412,14 @@ def load_geff_group(
         scale (list[float] | None): Optional spatial scale for the tracks. Defaults
             to no scaling (1 in every dimension).
 
+    A tracker's GEFF with a curated copy (see :mod:`mm_track.experiment_layout`)
+    loads as that copy.
+
     Returns:
         LoadedGeff: The tracks (with segmentation, if the geff refers to labels) and
             the related image array, if any.
     """
-    geff_path = Path(geff_path)
+    geff_path = experiment_layout.editable_geff(Path(geff_path))
     supplied_session = session
     try:
         with silence_geff_zarr_warnings():
@@ -361,21 +446,37 @@ def load_geff_group(
                     scale=scale,
                 )
             )
-        image = (
-            open_array(related.image_path) if related.image_path is not None else None
-        )
+        image = channels = None
+        if related.image_path is not None and related.channel_axis is not None:
+            channels = _read_channels(related)
+            shown = [data for channel, data in channels if channel.visible]
+            image = (shown or [data for _, data in channels] or [None])[0]
+        elif related.image_path is not None:
+            image = open_array(related.image_path)
         return LoadedGeff(
             name=name or geff_path.stem,
             geff_path=geff_path,
             tracks=tracks,
             image=image,
             image_path=related.image_path,
+            channels=channels,
         )
     except BaseException:
         if session is not None and supplied_session is None:
             with suppress(RuntimeError):  # Preserve the original loading error.
                 session.close()
         raise
+
+
+def _channel_colormap(channel: Channel):
+    if not channel.color:
+        return "gray"
+    from napari.utils.colormaps import Colormap
+
+    color = "#" + channel.color.lstrip("#")
+    if color.upper() == "#FFFFFF":
+        return "gray"
+    return Colormap(["#000000", color], name=f"{channel.name}_{color}")
 
 
 def add_geff_group_to_viewer(
@@ -408,13 +509,30 @@ def add_geff_group_to_viewer(
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
     tracks_viewer = TracksViewer.get_instance(viewer)
-    session = tracks_viewer.tracks_list._sessions.get(Path(geff_path).resolve())
+    geff_path = experiment_layout.editable_geff(Path(geff_path))
+    session = tracks_viewer.tracks_list.session_at(geff_path)
     loaded = load_geff_group(geff_path, name=name, scale=scale, session=session)
 
     if tracks_viewer.view_mode == "kymograph":
         tracks_viewer.set_view_mode("spatial")
 
-    if loaded.image is not None:
+    if loaded.channels:
+        # an OME-Zarr image: one layer per channel, displayed as its omero says
+        loaded.channel_layers = []
+        for channel, data in loaded.channels:
+            layer = viewer.add_image(
+                data,
+                name=f"{loaded.name}_{channel.name}",
+                colormap=_channel_colormap(channel),
+                contrast_limits=channel.contrast_limits,
+                visible=channel.visible,
+                blending="additive",
+                scale=loaded.tracks.scale,
+            )
+            loaded.channel_layers.append(layer)
+            if data is loaded.image and loaded.image_layer is None:
+                loaded.image_layer = layer
+    elif loaded.image is not None:
         loaded.image_layer = viewer.add_image(
             loaded.image,
             name=f"{loaded.name}_images",

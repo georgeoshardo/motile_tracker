@@ -10,11 +10,16 @@ from mm_track.application_menus.main_app import StartupWidget
 
 
 def load_startup_data(
-    viewer: napari.Viewer, store: Path, group: str | None, kymograph: bool
+    viewer: napari.Viewer,
+    store: Path,
+    group: str | None,
+    kymograph: bool,
+    run: str | None = None,
 ) -> None:
     """Load a GEFF group from `store` into the viewer, through the Kymograph Data
     widget when it is present (so its store path and group list are filled in),
-    or directly otherwise.
+    or directly otherwise. For a PyMMM experiment group, `group` is a trench image
+    (``trench_0396``) and `run` the tracking run (default: the first recorded).
     """
     from mm_track.application_menus.kymograph_data_widget import (
         KymographDataWidget,
@@ -34,7 +39,7 @@ def load_startup_data(
             widget = wrapper.widget()
 
     if widget is not None:
-        groups = widget.set_store_path(store)
+        groups = widget.set_store_path(store, run=run)
         if not groups:
             return
         if group is not None and not widget.select_group(group):
@@ -44,7 +49,7 @@ def load_startup_data(
         widget.load_selected()
         return
 
-    groups = find_geff_groups(store)
+    groups = find_geff_groups(store, run=run)
     if not groups:
         print(f"No GEFF groups found in {store}", file=sys.stderr)
         return
@@ -93,6 +98,12 @@ def main():
         help="Name of the GEFF group inside --data to load (default: the first).",
     )
     parser.add_argument(
+        "--run",
+        default=None,
+        help="For a PyMMM experiment group as --data: the tracking run to list "
+        "(default: the first recorded).",
+    )
+    parser.add_argument(
         "--spatial",
         action="store_true",
         help="Show the data from --data in the spatial view instead of the kymograph.",
@@ -109,7 +120,8 @@ def main():
         QTimer.singleShot(
             0,
             lambda: load_startup_data(
-                viewer, args.data, args.group, kymograph=not args.spatial
+                viewer, args.data, args.group, kymograph=not args.spatial,
+                run=args.run,
             ),
         )
 

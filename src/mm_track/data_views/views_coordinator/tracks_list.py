@@ -184,7 +184,9 @@ class TracksList(QGroupBox):
         # sit above the directory field so that the path, which is long, gets
         # the full width of the dock.
         self._save_name_edited = False
-        self._sessions = {}
+        # Open editing sessions. Found by their current path (session_at): a
+        # session's path changes when its first edit moves it to a curated copy.
+        self._sessions = []
         self._reported_rejections = {}
         self._reported_errors = {}
         self._error_dialog = None
@@ -350,7 +352,7 @@ class TracksList(QGroupBox):
         if session is None or session.closed:
             path = Path(source_path).expanduser().resolve() if source_path else None
             if path is not None and has_history(path):
-                session = self._sessions.get(path) or open_session(
+                session = self.session_at(path) or open_session(
                     path, default_save_dir()
                 )
                 tracks = session.tracks
@@ -358,7 +360,7 @@ class TracksList(QGroupBox):
                 if path is None or path.is_file() or not path.exists():
                     path = self._new_autosave_path(name)
                 session = create_session(tracks, path, default_save_dir())
-        self._sessions[session.path] = session
+        self._keep(session)
         item = QListWidgetItem(self.tracks_list)
         tracks_row = TracksButton(tracks, name)
         self.tracks_list.setItemWidget(item, tracks_row)
@@ -371,6 +373,18 @@ class TracksList(QGroupBox):
             self.tracks_list.setCurrentRow(len(self.tracks_list) - 1)
         return tracks
 
+    def session_at(self, path):
+        """The open editing session of the dataset at `path`, if any."""
+        path = Path(path).expanduser().resolve()
+        for session in self._sessions:
+            if not session.closed and session.path == path:
+                return session
+        return None
+
+    def _keep(self, session):
+        if not any(kept is session for kept in self._sessions):
+            self._sessions.append(session)
+
     def _new_autosave_path(self, name):
         # Dataset names can contain collection paths. They are display text, not
         # permission to escape the application's autosave directory.
@@ -378,7 +392,7 @@ class TracksList(QGroupBox):
         return default_save_dir() / f"{stem}_{uuid4().hex[:12]}.geff"
 
     def _update_autosave_status(self):
-        for session in self._sessions.values():
+        for session in self._sessions:
             if not session.closed:
                 session.poll()
                 self._report_rejection(session)
@@ -433,7 +447,7 @@ class TracksList(QGroupBox):
 
     def close_sessions(self):
         # Also called after C++ widget destruction; use only Python state here.
-        for session in self._sessions.values():
+        for session in self._sessions:
             try:
                 session.close()
             except RuntimeError as exc:
@@ -532,7 +546,7 @@ class TracksList(QGroupBox):
                 session.close()
             except RuntimeError as exc:
                 warn(str(exc), stacklevel=2)
-            self._sessions.pop(session.path, None)
+            self._sessions = [s for s in self._sessions if s is not session]
         if self.tracks_list.count() == 0:
             # An empty selection and an empty list are different states, and only
             # the second one means there is nothing left to show. Qt also drives
@@ -593,11 +607,11 @@ class TracksList(QGroupBox):
             )
             if source is not None and has_history(source):
                 source = source.resolve()
-                session = self._sessions.get(source) or open_session(
+                session = self.session_at(source) or open_session(
                     source, default_save_dir()
                 )
                 source = session.path
-                self._sessions[source] = session
+                self._keep(session)
                 tracks = session.tracks
             else:
                 tracks = loader(directory)

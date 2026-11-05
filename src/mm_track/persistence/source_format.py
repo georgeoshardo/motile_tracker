@@ -43,11 +43,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import zarr
+
+from mm_track.ome_zarr import multiscale_array
 
 FORMAT_VERSION = 1
 HISTORY_GROUP = "edit_history"
@@ -365,7 +368,11 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
     labels = None
     digests = {}
     if labels_obj is not None:
-        labels_path = (geff_path / labels_obj["path"]).resolve()
+        # An OME-Zarr image-label stands for its full-resolution array: record that
+        # array, so publishing edited masks replaces it alone and keeps the label
+        # image's OME metadata.
+        referenced = (geff_path / labels_obj["path"]).resolve()
+        labels_path = multiscale_array(referenced)
         if not labels_path.exists():
             raise UnsupportedFormat(f"label array {labels_obj['path']!r} not found")
         meta_files = {
@@ -375,7 +382,9 @@ def capture(geff_path, tracks, *, check_masks: bool = True) -> dict:
         }
         label_array = zarr.open_array(str(labels_path), mode="r")
         labels = {
-            "path": labels_obj["path"],
+            "path": labels_obj["path"]
+            if labels_path == referenced
+            else os.path.relpath(labels_path, geff_path),
             "files": meta_files,
             "shape": list(label_array.shape),
             "dtype": label_array.dtype.str,
@@ -1116,10 +1125,11 @@ def rebase(fmt, source, destination, labels_target=None):
     """A copy of the format for a dataset copied from `source` to `destination`.
 
     Relative references in the metadata are rewritten so that they still point at
-    the same objects; the label array may be redirected to `labels_target`.
+    the same objects; the labels may be redirected to `labels_target`, a label array
+    or an OME-Zarr image-label (the metadata then names the image-label and the
+    format records its array).
     """
     import copy
-    import os
 
     fmt = copy.deepcopy(fmt)
     attrs = root_attrs(fmt)
@@ -1134,7 +1144,9 @@ def rebase(fmt, source, destination, labels_target=None):
             obj["path"] = os.path.relpath(target, destination)
     fmt["root_text"] = root_text_with(fmt, attrs)
     if fmt.get("labels") and labels_target is not None:
-        fmt["labels"]["path"] = os.path.relpath(labels_target, destination)
+        fmt["labels"]["path"] = os.path.relpath(
+            multiscale_array(labels_target), destination
+        )
     elif fmt.get("labels"):
         target = (Path(source) / fmt["labels"]["path"]).resolve()
         fmt["labels"]["path"] = os.path.relpath(target, destination)

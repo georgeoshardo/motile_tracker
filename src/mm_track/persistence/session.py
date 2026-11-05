@@ -11,8 +11,17 @@ from pathlib import Path
 import zarr
 from funtracks.actions.action_history import ActionHistory
 
+from mm_track.experiment_layout import (
+    curation_target,
+    review_of,
+    review_stamp,
+    with_review,
+)
+from mm_track.ome_zarr import group_attributes
+
 from . import source_format as sf
 from .codec import Encoder
+from .curation import make_curated_copy, remove_curated_copy
 from .projection import (
     check_external_change,
     dataset_signature,
@@ -284,6 +293,50 @@ class EditSession:
         if self.error:
             raise RuntimeError(self.error)
 
+    @property
+    def review(self):
+        """The dataset's review stamp (see :mod:`mm_track.experiment_layout`), or
+        None if it is not marked reviewed."""
+        fmt = self.store.metadata("source_format")
+        return review_of(
+            sf.root_attrs(fmt)
+            if fmt is not None
+            else self.store.metadata("original_attrs", {})
+        )
+
+    def set_reviewed(self, reviewed):
+        """Mark the dataset reviewed at its current revision, by the current user,
+        now; or remove the mark. The mark is metadata in the GEFF, not an edit: it
+        is not undone, and later publications keep it.
+
+        Returns:
+            The stamp, or None.
+        """
+        self.flush()
+        if self.closed:
+            raise RuntimeError("Editing session is closed")
+        check_external_change(self.store)
+        stamp = review_stamp(self.revision) if reviewed else None
+        fmt = self.store.metadata("source_format")
+        if fmt is not None:
+            attrs = with_review(sf.root_attrs(fmt), stamp)
+            fmt = {**fmt, "root_text": sf.root_text_with(fmt, attrs)}
+            self.store.set_metadata("source_format", fmt)
+        else:
+            attrs = with_review(self.store.metadata("original_attrs", {}), stamp)
+            self.store.set_metadata("original_attrs", attrs)
+        # Until the new signature is recorded, a reopening rebuilds the GEFF from the
+        # journal (whose format now carries the mark) rather than refusing it.
+        marker = self.path / "edit_history" / "publishing"
+        marker.write_text(str(self.revision))
+        if fmt is not None:
+            (self.path / sf.root_file(fmt)).write_text(fmt["root_text"])
+        else:
+            zarr.open_group(self.path, mode="a").attrs.update({"geff": attrs["geff"]})
+        self.store.set_metadata("graph_signature", dataset_signature(self.path, fmt))
+        marker.unlink()
+        return stamp
+
     def save_copy(self, path):
         self.flush()
         path = Path(path).expanduser().resolve()
@@ -379,6 +432,10 @@ class PendingSession:
     captured in memory when it is opened, and becomes the history's initial
     revision when the first edit commits. Until then the dataset's files and
     folders are untouched.
+
+    A tracker's GEFF in PyMMM's experiment layout is never edited: the first edit
+    copies it to its curated place (see :mod:`.curation`), the history starts in
+    the copy, and ``path`` names the copy from then on.
     """
 
     def __init__(self, tracks, path, *, source_format=AUTO):
@@ -388,8 +445,12 @@ class PendingSession:
         self._error = None
         self._session = None
         self._initial = snapshot(tracks, self.path, source_format)
-        labels = sf.labels_path(self.path, self._initial["format"])
-        for target in (self.path, labels):
+        self._curation = curation_target(self.path)
+        if self._curation is not None:
+            writes = (self._curation.image, self._curation.labels.parent)
+        else:
+            writes = (self.path, sf.labels_path(self.path, self._initial["format"]))
+        for target in writes:
             if (
                 target is not None
                 and target.exists()
@@ -399,16 +460,32 @@ class PendingSession:
         tracks.action_history = _PendingHistory(self, tracks.action_history)
         tracks.edit_session = self
 
+    def _begin(self):
+        """Create the dataset's history (in the curated copy, for a tracker's GEFF)."""
+        path, initial = self.path, self._initial
+        if self._curation is not None:
+            initial = make_curated_copy(self._curation, initial)
+            path = self._curation.geff
+        try:
+            session = EditSession.create(
+                self.tracks, path, source_format=initial["format"], initial=initial
+            )
+        except BaseException:
+            if self._curation is not None:
+                remove_curated_copy(self._curation)
+            raise
+        self.path = path
+        self._curation = None
+        session.facade = self
+        self.tracks.edit_session = self
+        self._session = session
+        return session
+
     def _start(self, operation):
         if self._session is not None:
             return
         try:
-            session = EditSession.create(
-                self.tracks,
-                self.path,
-                source_format=self._initial["format"],
-                initial=self._initial,
-            )
+            session = self._begin()
         except Exception as exc:
             self._error = f"Could not start saving edits: {exc}"
             # The edit cannot be saved: return to the state as opened.
@@ -423,9 +500,6 @@ class PendingSession:
             )
             self.tracks.refresh.emit(None)
             raise RuntimeError(self._error) from exc
-        session.facade = self
-        self.tracks.edit_session = self
-        self._session = session
         session.commit(operation, full=True)
 
     @property
@@ -458,15 +532,23 @@ class PendingSession:
     def save_copy(self, path):
         if self._session is None:
             # A copy carries the history, so the history must exist first.
-            self._session = EditSession.create(
-                self.tracks,
-                self.path,
-                source_format=self._initial["format"],
-                initial=self._initial,
-            )
-            self._session.facade = self
-            self.tracks.edit_session = self
+            self._begin()
         self._session.save_copy(path)
+
+    @property
+    def review(self):
+        if self._session is not None:
+            return self._session.review
+        return review_of(group_attributes(self.path) or {})
+
+    def set_reviewed(self, reviewed):
+        """See :meth:`EditSession.set_reviewed`. Marking a dataset nobody edited
+        starts its history (for a tracker's GEFF: makes the curated copy) first."""
+        if self._session is None:
+            if not reviewed and self.review is None:
+                return None
+            self._begin()
+        return self._session.set_reviewed(reviewed)
 
     def close(self):
         if self.closed:
