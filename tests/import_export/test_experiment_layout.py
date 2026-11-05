@@ -179,6 +179,38 @@ def test_tracker_geff_loads_with_its_channels(experiment_store, segmentation_2d)
     np.testing.assert_array_equal(loaded.image, np.asarray(segmentation_2d) * 10)
 
 
+def test_every_channel_is_listed_and_only_active_ones_shown(
+    make_napari_viewer, experiment_store
+):
+    """The kymograph view lists no spatial image layers, so each channel other than
+    the background is an overlay: there to be switched on, hidden unless its
+    omero says active."""
+    from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
+    from mm_track.import_export.geff_collection import add_geff_group_to_viewer
+
+    viewer = make_napari_viewer()
+    tracker = experiment_store / "trench_0000" / "tracks" / f"{RUN}.geff"
+
+    loaded = add_geff_group_to_viewer(viewer, tracker, "trench_0000", kymograph=False)
+
+    assert [layer.name for layer in loaded.channel_layers] == [
+        "trench_0000_PC", "trench_0000_mCherry"]
+    assert all(layer in viewer.layers for layer in loaded.channel_layers)
+    assert viewer.layers["trench_0000_PC"].visible
+    assert not viewer.layers["trench_0000_mCherry"].visible
+
+    tracks_viewer = TracksViewer.get_instance(viewer)
+    tracks_viewer.set_view_mode("kymograph")
+    kymograph = tracks_viewer.kymograph_layers
+    overlay = kymograph.overlay_layers["trench_0000_mCherry"]
+    assert kymograph.image_layer_name == "trench_0000_PC"
+    assert kymograph.background_layer in viewer.layers
+    assert kymograph.background_layer.visible
+    assert overlay in viewer.layers
+    assert not overlay.visible
+    tracks_viewer.tracks_list.close_sessions()
+
+
 def test_opening_writes_nothing(experiment_store, tmp_path, qtbot):
     trench = experiment_store / "trench_0000"
     before = _digest(trench)

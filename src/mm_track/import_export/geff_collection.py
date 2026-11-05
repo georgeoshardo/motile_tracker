@@ -546,6 +546,13 @@ def add_geff_group_to_viewer(
 
     if loaded.image_layer is not None:
         tracks_viewer.set_kymograph_image_layer(loaded.image_layer.name)
+    if loaded.channel_layers:
+        # every other channel over it, hidden unless its omero says active, so the
+        # kymograph view lists them all (it shows no spatial image layers)
+        tracks_viewer.set_kymograph_overlay_layers([
+            layer.name for layer in loaded.channel_layers
+            if layer is not loaded.image_layer
+        ])
     if kymograph:
         tracks_viewer.set_view_mode("kymograph")
     return loaded

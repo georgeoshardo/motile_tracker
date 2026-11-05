@@ -422,6 +422,8 @@ class KymographLayerGroup:
                     )
                     if existing is not None and existing in self.viewer.layers
                 ]
+                # shown or hidden as its source is: a channel hidden in the image is
+                # listed, ready to be switched on, but not drawn
                 layer = self.viewer.add_image(
                     image,
                     name=f"{self.name}_kymograph_{source.name}",
@@ -429,6 +431,7 @@ class KymographLayerGroup:
                     colormap=source.colormap,
                     contrast_limits=source.contrast_limits,
                     blending="additive",
+                    visible=source.visible,
                 )
                 self.overlay_layers[source.name] = layer
                 # keep the overlays with the background, under labels and points
