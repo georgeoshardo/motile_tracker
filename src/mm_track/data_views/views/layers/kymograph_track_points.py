@@ -437,6 +437,19 @@ class KymographTrackPoints(CellStatusPoints, Points):
             else:
                 self.tracks_viewer.selected_nodes.reset()
 
+    def nodes_in_box(self, corner, other_corner) -> list[int]:
+        """The shown nodes whose markers' centres lie in the box with these corners
+        (world coordinates, such as two mouse positions)."""
+        if not self.nodes:
+            return []
+        a = np.asarray(self.world_to_data(corner), dtype=float)[-2:]
+        b = np.asarray(self.world_to_data(other_corner), dtype=float)[-2:]
+        low, high = np.minimum(a, b), np.maximum(a, b)
+        data = np.asarray(self.data, dtype=float)[:, -2:]
+        inside = np.all((data >= low) & (data <= high), axis=1)
+        inside &= np.asarray(self.shown, dtype=bool)
+        return [int(self.nodes[i]) for i in np.flatnonzero(inside)]
+
     def _map_track_colors(self, track_ids: list[int]) -> np.ndarray:
         """Map track ids to an (N, 4) array of face colors in a single colormap call
         (see TrackPoints._map_track_colors). With no points, a single white color is

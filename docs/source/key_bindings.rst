@@ -16,6 +16,9 @@ Napari viewer and layer key bindings and mouse functions
      - Add/remove this node to/from selection (does not center view)
    * - CTRL/CMD + click on point or label
      - Center view on this node (does not change selection)
+   * - SHIFT + mouse drag on the kymograph
+     - | Draw a box and add/remove the nodes in it to/from the selection,
+       | as in the tree view (in pan/zoom mode; does not center view)
    * - Mouse drag with point layer selection tool active
      - Select multiple nodes at once
    * - ESC

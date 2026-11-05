@@ -3,6 +3,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from mm_track.data_views.views.layers.kymograph_layer_group import _zoom_box
 from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
 
@@ -131,3 +132,80 @@ def test_kymograph_points_outline_selected_nodes(kymograph_tracks_viewer):
     assert points_layer.size[index] > points_layer.default_size
     other = points_layer.node_index_dict[1]
     np.testing.assert_allclose(points_layer.border_color[other], [1, 1, 1, 1])
+
+
+class DragEvent:
+    """A mouse event that a test moves along, as napari does for a drag callback."""
+
+    def __init__(self, position, modifiers=("Shift",)):
+        self.type = "mouse_press"
+        self.button = 1
+        self.modifiers = list(modifiers)
+        self.move_to(position)
+
+    def move_to(self, position):
+        # world (t, y, x); the screen position only sizes the box, so use the same
+        self.position = (0.0, *position)
+        self.pos = np.asarray(position[::-1], dtype=float)
+
+
+def drag(group, start, end, modifiers=("Shift",)):
+    """Drive the kymograph's drag callback from start to end; True if it took the drag."""
+    event = DragEvent(start, modifiers)
+    callback = group._box_select(group.viewer, event)
+    if callback is None:
+        return False
+    try:
+        next(callback)
+    except StopIteration:
+        return False
+    event.type = "mouse_move"
+    event.move_to(end)
+    next(callback)
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(callback)
+    return True
+
+
+def test_kymograph_shift_drag_selects_the_nodes_in_a_box(kymograph_tracks_viewer, qtbot):
+    tracks_viewer = kymograph_tracks_viewer
+    group = tracks_viewer.kymograph_layers
+    points_layer = group.points_layer
+    # the second frame of the page is x in [100, 200)
+    frame_1 = {
+        node
+        for node, (_, x) in zip(points_layer.nodes, points_layer.data, strict=True)
+        if 100 <= x < 200
+    }
+    assert 3 in frame_1
+
+    assert drag(group, (0.0, 100.0), (100.0, 199.0))
+    qtbot.waitUntil(lambda: set(tracks_viewer.selected_nodes) == frame_1)
+    assert not _zoom_box(group.viewer).visible
+
+    # a box over nodes already selected deselects them, as in the lineage tree
+    assert drag(group, (55.0, 140.0), (65.0, 150.0))
+    qtbot.waitUntil(lambda: set(tracks_viewer.selected_nodes) == frame_1 - {3})
+
+
+def test_kymograph_shift_drag_leaves_clicks_and_other_modifiers_alone(
+    kymograph_tracks_viewer, qtbot
+):
+    tracks_viewer = kymograph_tracks_viewer
+    group = tracks_viewer.kymograph_layers
+    tracks_viewer.selected_nodes.reset()
+
+    # a drag shorter than MIN_BOX_PX is a Shift+click, which the layer handles
+    assert drag(group, (60.0, 145.0), (61.0, 146.0))
+    # Ctrl+drag and a plain drag are not box selections (a plain drag pans)
+    assert not drag(group, (0.0, 100.0), (100.0, 199.0), modifiers=("Control",))
+    assert not drag(group, (0.0, 100.0), (100.0, 199.0), modifiers=())
+    qtbot.wait(10)
+    assert len(tracks_viewer.selected_nodes) == 0
+
+    # nor outside pan/zoom mode
+    group.viewer.layers.selection.active = group.points_layer
+    group.points_layer.mode = "select"
+    assert not drag(group, (0.0, 100.0), (100.0, 199.0))
+    group.points_layer.mode = "pan_zoom"

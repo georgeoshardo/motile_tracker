@@ -6,7 +6,7 @@ import napari
 import numpy as np
 from napari.utils.notifications import show_info
 from psygnal import Signal
-from qtpy.QtCore import QEvent, QObject
+from qtpy.QtCore import QEvent, QObject, QTimer
 
 from mm_track.data_views.views.kymograph_time_slider import (
     KymographTimeSlider,
@@ -38,6 +38,10 @@ if TYPE_CHECKING:
 
     from mm_track.data_views.views_coordinator.tracks_viewer import TracksViewer
 
+# A Shift+drag shorter than this many screen pixels in both directions is a Shift+click,
+# which the layer under the cursor handles (append one node).
+MIN_BOX_PX = 5
+
 
 class _LeaveFilter(QObject):
     """Calls ``on_leave`` when the mouse leaves the widget it is installed on."""
@@ -50,6 +54,13 @@ class _LeaveFilter(QObject):
         if event.type() == QEvent.Leave:
             self._on_leave()
         return False
+
+
+def _zoom_box(viewer: napari.Viewer):
+    """napari's zoom-box overlay: viewer._zoom_box up to napari 0.7, then
+    viewer.canvas.overlays._zoom_box."""
+    box = getattr(viewer, "_zoom_box", None)
+    return box if box is not None else viewer.canvas.overlays._zoom_box
 
 
 class KymographLayerGroup:
@@ -105,6 +116,8 @@ class KymographLayerGroup:
         self.continuation_links_layer: KymographTrackLinks | None = None
         self.branch_links_layer: KymographTrackLinks | None = None
         self.bounds_layer: napari.layers.Shapes | None = None
+        # Shift+drag selects the nodes in a box, as in the lineage tree
+        self.viewer.mouse_drag_callbacks.append(self._box_select)
 
     def set_tracks(self, tracks: Tracks | None, name: str) -> None:
         self.tracks = tracks
@@ -778,6 +791,55 @@ class KymographLayerGroup:
 
     def _on_cursor_moved(self, event=None) -> None:
         self._set_hover_frame(self._frame_under_cursor())
+
+    def _box_select(self, viewer: napari.Viewer, event):
+        """Shift+drag on the kymograph: draw a box and toggle the nodes in it, like
+        Shift+drag in the lineage tree (nodes already selected are deselected).
+
+        Only in pan/zoom mode (the active layer's, or with none active), where napari
+        does not pan while a modifier is held. The box is napari's own zoom-box overlay
+        (Alt+drag), drawn without zooming. A node is in the box when its marker's centre
+        is; nodes hidden on the kymograph are left out.
+        """
+        if (
+            not self.active
+            or self.points_layer is None
+            or event.type != "mouse_press"
+            or event.button != 1
+            or set(event.modifiers) != {"Shift"}
+        ):
+            return
+        active = viewer.layers.selection.active
+        if active is not None and active.mode != "pan_zoom":
+            return
+        box = _zoom_box(viewer)
+        press_pos = move_pos = event.pos[::-1]
+        press = release = event.position
+        before = set(self.tracks_viewer.selected_nodes.as_list)
+        yield
+        while event.type == "mouse_move":
+            move_pos = event.pos[::-1]
+            release = event.position
+            box.position = (press_pos, move_pos)
+            box.visible = True
+            yield
+        box.visible = False
+        if np.abs(np.subtract(press_pos, move_pos)).max() < MIN_BOX_PX:
+            return
+        picked = set(self.points_layer.nodes_in_box(press, release))
+        if not picked:
+            return
+        # after the layer under the cursor has handled the release: a quick drag counts
+        # as a click there (see detect_click) and may have toggled the node it started
+        # on, so the box toggles against the selection from before the press
+        QTimer.singleShot(0, lambda: self._select_box(before ^ picked))
+
+    def _select_box(self, nodes: set[int]) -> None:
+        with self.tracks_viewer.selection_updates(set_view=False):
+            if nodes:
+                self.tracks_viewer.selected_nodes.add_list(sorted(nodes))
+            else:
+                self.tracks_viewer.selected_nodes.reset()
 
     def _on_cursor_left(self) -> None:
         self._set_hover_frame(None)
